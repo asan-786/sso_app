@@ -7,6 +7,15 @@ import uuid
 
 app = FastAPI(title="SSO Portal Backend - Module 2")
 
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+    clientId: str
+@app.get("/")
+def home():
+    return {"status": "Backend is running 🚀"}
+
 # Allow dev React origins (add yours if different)
 origins = [
     "http://localhost:3000",
