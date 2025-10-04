@@ -3,7 +3,6 @@ from flask_jwt_extended import jwt_required, get_jwt, create_access_token
 from .token_service import create_tokens_for_user, revoke_access_token_by_jti, is_token_blacklisted, verify_and_consume_refresh_token, revoke_refresh_token_by_plain
 from .models import db
 import datetime
-from werkzeug.security import safe_str_cmp
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
