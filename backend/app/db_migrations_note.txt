@@ -1,0 +1,15 @@
+Use Flask-Migrate or Alembic in the repo to create the tables:
+
+Example:
+1) export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/sso_db
+2) flask db init
+3) flask db migrate -m "create token tables"
+4) flask db upgrade
+
+If not using Flask-Migrate, run a small script to create tables:
+
+from app import create_app
+from app.models import db
+app = create_app()
+with app.app_context():
+    db.create_all()
