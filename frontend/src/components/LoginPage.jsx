@@ -10,18 +10,18 @@ const LoginPage = ({ onNavigate }) => {
 
   const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setLoading(true);
 
-    setTimeout(() => {
-      const result = login(formData.email, formData.password);
-      if (!result.success) {
-        setError(result.message);
-      }
-      setLoading(false);
-    }, 500);
+    const result = await login(formData.email, formData.password);
+    
+    if (!result.success) {
+      setError(result.message);
+    }
+    
+    setLoading(false);
   };
 
   return (
@@ -33,6 +33,13 @@ const LoginPage = ({ onNavigate }) => {
           </div>
           <h1 className="text-3xl font-bold text-gray-800">Welcome Back</h1>
           <p className="text-gray-600 mt-2">Login to your SSO Account</p>
+        </div>
+
+        {/* Demo Credentials */}
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+          <p className="text-sm font-semibold text-blue-800 mb-2">Demo Credentials:</p>
+          <p className="text-xs text-blue-700">Admin: admin@example.com / admin123</p>
+          <p className="text-xs text-blue-700">Student: student@example.com / student123</p>
         </div>
 
         {error && (
@@ -49,6 +56,7 @@ const LoginPage = ({ onNavigate }) => {
               name="email"
               value={formData.email}
               onChange={handleChange}
+              required
               placeholder="student@university.edu"
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             />
@@ -61,11 +69,11 @@ const LoginPage = ({ onNavigate }) => {
               name="password"
               value={formData.password}
               onChange={handleChange}
+              required
               placeholder="••••••••"
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             />
           </div>
-          
 
           <div className="flex items-center justify-between">
             <label className="flex items-center">
