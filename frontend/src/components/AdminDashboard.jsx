@@ -120,7 +120,7 @@ const AdminDashboard = () => {
       alert("App updated successfully!");
     } catch (err) {
       console.error("Error updating app:", err);
-      alert("Failed to update application");
+      alert("Failed to update application.");
     }
   };
 
@@ -140,7 +140,7 @@ const AdminDashboard = () => {
       alert("App deleted successfully!");
     } catch (err) {
       console.error("Error deleting app:", err);
-      alert("Failed to delete application");
+      alert("Failed to delete application!");
     }
   };
 
@@ -229,7 +229,7 @@ const AdminDashboard = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-100">
       {/* Header */}
       <header className="bg-white shadow-sm">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
