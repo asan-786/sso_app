@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Third-Party Service - SSO Integration Demo</title>
+    <!-- Load Tailwind CSS for quick styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+    <!-- 
+        NOTE: In a real project, you would import the SDK as a module.
+        Here, we assume the SSOService class is defined and available globally 
+        (e.g., copied from sdk/SSO_JS_SDK.js).
+    -->
+    <script src="../sdk/SSO_JS_SDK.js"></script> 
+</head>
+<body class="bg-gray-50 min-h-screen p-8">
+
+    <div class="max-w-4xl mx-auto space-y-8">
+
+        <h1 class="text-3xl font-bold text-center text-indigo-700">
+            External University App (Protected Content Demo)
+        </h1>
+        <p class="text-center text-gray-600">
+            This application uses the Enterprise SSO Service for authentication.
+        </p>
+
+        <!-- Dynamic Content Container -->
+        <div id="app-content" class="bg-white p-8 rounded-xl shadow-lg border border-indigo-100">
+            <div id="loader" class="text-center text-gray-500 hidden">Checking SSO Session...</div>
+            <div id="login-form"></div>
+            <div id="dashboard" class="hidden"></div>
+        </div>
+
+        <!-- Result of Server Check -->
+        <div id="secure-response" class="hidden p-6 bg-red-50 rounded-lg border border-red-200">
+            <h3 class="text-lg font-semibold text-red-700 mb-2">Resource Server Response:</h3>
+            <pre id="response-data" class="bg-white p-3 rounded text-sm text-gray-800 overflow-x-auto"></pre>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. CONFIGURATION ---
+        // !!! REPLACE WITH YOUR ACTUAL API KEY FROM SSO DASHBOARD !!!
+        const YOUR_APP_API_KEY = "sso_live_Lw_MaaLm92aRjGLa-CunEZWMovqo-_QpuZdMXiryaMk"; 
+        
+        // Initialize the SSO Service
+        const ssoService = new SSOService(YOUR_APP_API_KEY);
+        
+        // --- 2. DOM Elements ---
+        const loginFormContainer = document.getElementById('login-form');
+        const dashboardContainer = document.getElementById('dashboard');
+        const loader = document.getElementById('loader');
+        const secureResponseContainer = document.getElementById('secure-response');
+        const responseData = document.getElementById('response-data');
+
+        // --- 3. RENDER FUNCTIONS ---
+        function renderLoginForm() {
+            loginFormContainer.innerHTML = `
+                <div class="text-center mb-6">
+                    <h2 class="text-2xl font-semibold text-gray-800">Sign In with SSO</h2>
+                    <p class="text-sm text-gray-500">Enter your university credentials</p>
+                </div>
+                <form id="sso-login-form" class="space-y-4 max-w-sm mx-auto">
+                    <input type="email" id="email" placeholder="Email" required 
+                           class="w-full px-4 py-2 border rounded-lg focus:ring-indigo-500">
+                    <input type="password" id="password" placeholder="Password" required
+                           class="w-full px-4 py-2 border rounded-lg focus:ring-indigo-500">
+                    <button type="submit" 
+                            class="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">
+                        Login via SSO
+                    </button>
+                    <p id="error-message" class="text-red-500 text-sm text-center mt-2"></p>
+                </form>
+            `;
+            document.getElementById('sso-login-form').addEventListener('submit', handleSSOLoginSubmit);
+            loginFormContainer.classList.remove('hidden');
+            dashboardContainer.classList.add('hidden');
+            secureResponseContainer.classList.add('hidden');
+        }
+
+        function renderDashboard(user) {
+            dashboardContainer.innerHTML = `
+                <div class="space-y-4">
+                    <h2 class="text-2xl font-bold text-green-700">Welcome, ${user.name}!</h2>
+                    <p class="text-gray-600">You are logged into this external application via the SSO portal.</p>
+                    <div class="bg-green-50 p-4 rounded-lg">
+                        <p class="text-sm font-semibold">User Info (from SSO Token):</p>
+                        <ul class="text-xs text-gray-700 space-y-1 mt-1">
+                            <li>Email: ${user.email}</li>
+                            <li>Role: ${user.role}</li>
+                        </ul>
+                    </div>
+                    <button id="access-resource" 
+                            class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        Access Protected Resource
+                    </button>
+                    <button id="logout-button" 
+                            class="bg-gray-300 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-400">
+                        Logout
+                    </button>
+                </div>
+            `;
+            document.getElementById('access-resource').addEventListener('click', accessSecureResource);
+            document.getElementById('logout-button').addEventListener('click', handleLogout);
+            loginFormContainer.classList.add('hidden');
+            dashboardContainer.classList.remove('hidden');
+        }
+
+        // --- 4. HANDLERS ---
+        async function handleSSOLoginSubmit(e) {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const errorMessage = document.getElementById('error-message');
+            errorMessage.textContent = 'Logging in...';
+
+            const result = await ssoService.loginWithSSO(email, password);
+
+            if (result.success) {
+                // If login succeeds, immediately check the session
+                checkSession(); 
+            } else {
+                errorMessage.textContent = result.message;
+            }
+        }
+
+        function handleLogout() {
+            ssoService.logout();
+            secureResponseContainer.classList.add('hidden');
+            renderLoginForm();
+        }
+
+        async function accessSecureResource() {
+            const token = ssoService.getAccessToken();
+            responseData.textContent = 'Contacting secure server...';
+            secureResponseContainer.classList.remove('hidden');
+
+            try {
+                // Here, the client sends the token to its own backend (secure_service.py)
+                const response = await fetch('http://127.0.0.1:8080/secure-data', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${token}` // IMPORTANT: Send the JWT
+                    }
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    secureResponseContainer.classList.remove('bg-red-50');
+                    secureResponseContainer.classList.add('bg-green-50');
+                    document.querySelector('#secure-response h3').classList.remove('text-red-700');
+                    document.querySelector('#secure-response h3').classList.add('text-green-700');
+                } else {
+                    secureResponseContainer.classList.remove('bg-green-50');
+                    secureResponseContainer.classList.add('bg-red-50');
+                    document.querySelector('#secure-response h3').classList.remove('text-green-700');
+                    document.querySelector('#secure-response h3').classList.add('text-red-700');
+                }
+
+                responseData.textContent = JSON.stringify(data, null, 2);
+
+            } catch (error) {
+                responseData.textContent = `Client Network Error: ${error.message}`;
+            }
+        }
+        
+        // --- 5. INITIAL CHECK ---
+        async function checkSession() {
+            loader.classList.remove('hidden');
+            const token = ssoService.getAccessToken();
+
+            if (token) {
+                // Use the JS SDK's verification function
+                const validation = await ssoService.verifyToken(token);
+                
+                if (validation.valid) {
+                    renderDashboard(validation.user);
+                } else {
+                    ssoService.logout(); // Clear bad token
+                    renderLoginForm();
+                }
+            } else {
+                renderLoginForm();
+            }
+            loader.classList.add('hidden');
+        }
+
+        window.onload = checkSession;
+    </script>
+</body>
+</html>
