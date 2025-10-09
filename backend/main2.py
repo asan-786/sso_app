@@ -416,6 +416,10 @@ def sso_login_redirect(credentials: UserLogin, redirect_uri: str):
     """
     Handles user authentication for SSO flow and redirects to the third-party app
     with the access token appended as a query parameter in the hash.
+    
+    NOTE: The external SSO login page (HTML/JS) must perform a POST request
+    to THIS endpoint (/login) with 'email', 'password', and 'redirect_uri'
+    in the request body/form data upon successful credential submission.
     """
     conn = get_db()
     cursor = conn.cursor()
@@ -425,6 +429,7 @@ def sso_login_redirect(credentials: UserLogin, redirect_uri: str):
     
     if not user or not verify_password(credentials.password, user["password_hash"]):
         # Redirect back to a failure page or raise an exception
+        # For simplicity in this demo, we raise an exception.
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     # 1. Generate the Access Token
@@ -432,7 +437,6 @@ def sso_login_redirect(credentials: UserLogin, redirect_uri: str):
     
     # 2. Construct the Redirect URL
     # The final redirect URL will be: {redirect_uri}?token={JWT}
-    # Our frontend (CampusConnect) expects this format to start processing the token.
     final_redirect_url = f"{redirect_uri}?token={access_token}"
 
     # 3. Redirect the browser
