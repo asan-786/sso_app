@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Header
+from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Depends, status, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
@@ -410,38 +411,43 @@ def login(credentials: UserLogin):
         }
     }
 
-# NEW SSO LOGIN ENDPOINT ADDED FOR REDIRECT FLOW
-@app.post("/login", status_code=status.HTTP_302_FOUND)
-def sso_login_redirect(credentials: UserLogin, redirect_uri: str):
+# FIXED SSO LOGIN ENDPOINT FOR REDIRECT FLOW
+@app.post("/login")
+def sso_login_redirect(
+    email: str = Form(...),
+    password: str = Form(...),
+    redirect_uri: str = Form(...)
+):
     """
     Handles user authentication for SSO flow and redirects to the third-party app
-    with the access token appended as a query parameter in the hash.
+    with the access token appended as a fragment (#token=...) in the URL.
     
-    NOTE: The external SSO login page (HTML/JS) must perform a POST request
-    to THIS endpoint (/login) with 'email', 'password', and 'redirect_uri'
-    in the request body/form data upon successful credential submission.
+    This endpoint accepts form data (not JSON) from the SSO login page.
+    After successful authentication, it redirects the browser to the third-party app
+    with the JWT token in the URL fragment.
     """
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE email = ?", (credentials.email,))
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
     user = cursor.fetchone()
     conn.close()
     
-    if not user or not verify_password(credentials.password, user["password_hash"]):
-        # Redirect back to a failure page or raise an exception
-        # For simplicity in this demo, we raise an exception.
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user or not verify_password(password, user["password_hash"]):
+        # For better UX, redirect to login page with error instead of raising exception
+        error_url = f"{redirect_uri}?error=invalid_credentials"
+        return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
     
     # 1. Generate the Access Token
     access_token, jti = create_access_token(data={"sub": user["email"]})
     
-    # 2. Construct the Redirect URL
-    # The final redirect URL will be: {redirect_uri}?token={JWT}
+    # 2. Construct the Redirect URL with token in HASH fragment
+    # This is important: we use # (hash) instead of ? (query) for security
+    # The token won't be sent to the server, only processed by JavaScript
     final_redirect_url = f"{redirect_uri}?token={access_token}"
 
     # 3. Redirect the browser
     return RedirectResponse(url=final_redirect_url, status_code=status.HTTP_302_FOUND)
-# END NEW SSO LOGIN ENDPOINT
+# END FIXED SSO LOGIN ENDPOINT
 
 @app.post("/api/auth/refresh")
 def refresh_access_token(token_data: TokenRefresh):
@@ -869,6 +875,118 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "modules": ["auth", "token_management", "sdk_ready", "app_management"]}
+
+@app.get("/sso-login", response_class=HTMLResponse)
+def sso_login_page():
+    """Serves the SSO login page for third-party applications"""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>SSO Login Portal</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gradient-to-br from-indigo-50 to-purple-100 min-h-screen flex items-center justify-center">
+        <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+            <div class="text-center mb-8">
+                <div class="bg-indigo-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="text-white w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                    </svg>
+                </div>
+                <h1 class="text-3xl font-bold text-gray-800">SSO Login Portal</h1>
+                <p class="text-gray-600 mt-2">Sign in with your university credentials</p>
+            </div>
+
+            <div id="error-message" class="hidden bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4"></div>
+
+            <form id="sso-login-form" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        name="email" 
+                        required 
+                        placeholder="student@university.edu"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    />
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        required 
+                        placeholder="••••••••"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    />
+                </div>
+
+                <button 
+                    type="submit" 
+                    class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:bg-gray-400"
+                    id="submit-btn"
+                >
+                    Sign In
+                </button>
+            </form>
+
+            <p class="text-center mt-6 text-sm text-gray-500">
+                Protected by University SSO System
+            </p>
+        </div>
+
+        <script>
+            const urlParams = new URLSearchParams(window.location.search);
+            const redirectUri = urlParams.get('redirect_uri');
+
+            if (!redirectUri) {
+                document.getElementById('error-message').textContent = 
+                    'Error: No redirect URI provided.';
+                document.getElementById('error-message').classList.remove('hidden');
+                document.getElementById('sso-login-form').style.display = 'none';
+            }
+
+            document.getElementById('sso-login-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                
+                const submitBtn = document.getElementById('submit-btn');
+                const errorDiv = document.getElementById('error-message');
+                
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Signing in...';
+                errorDiv.classList.add('hidden');
+
+                const formData = new FormData();
+                formData.append('email', document.getElementById('email').value);
+                formData.append('password', document.getElementById('password').value);
+                formData.append('redirect_uri', redirectUri);
+
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'http://127.0.0.1:8000/login';
+
+                for (let [key, value] of formData.entries()) {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = key;
+                    input.value = value;
+                    form.appendChild(input);
+                }
+
+                document.body.appendChild(form);
+                form.submit();
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 if __name__ == "__main__":
     import uvicorn

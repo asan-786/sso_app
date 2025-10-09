@@ -26,7 +26,8 @@
         // Base URL for the Third-Party secure service (your Flask app)
         const SECURE_SERVICE_URL = "http://127.0.0.1:8080";
         // Base URL for the main SSO login page (change port if necessary)
-        const SSO_LOGIN_URL = "http://localhost:3000/login";
+        // Point to the standalone SSO login page served on port 8000
+        const SSO_LOGIN_URL = "http://127.0.0.1:8000/sso-login";
 
         let currentUserName = "Student"; // State for displaying user name
         let secureContent = "Click 'Logout' and 'Login via SSO' to load secure data."; // State for protected content
