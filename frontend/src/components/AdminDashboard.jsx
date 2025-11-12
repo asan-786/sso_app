@@ -473,7 +473,7 @@ const AdminDashboard = () => {
                         <option value="admin">Admin</option>
                       </select>
                     </div>
-                  ))}
+                 ))}
                 </div>
               </div>
             )}

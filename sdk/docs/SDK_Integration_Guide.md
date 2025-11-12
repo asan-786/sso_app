@@ -2,9 +2,11 @@ SSO Portal Integration Guide (Module 4)
 This guide provides the necessary information and code snippets for third-party application developers to integrate with the Enterprise Single Sign-On (SSO) Service.
 
 Prerequisites
-Application Registration: Your application must be registered in the SSO Admin Dashboard (Manage Applications tab).
+Application Registration: Your application must be registered in the SSO Admin Dashboard (Manage Applications tab). Each application must have a `client_id`. This identifier is required when sending users to the hosted SSO login page so that the backend can map the login to your app and enforce consent.
 
-API Key: You must generate a Developer API Key from the student dashboard's Developer API Keys section. This key is used to authenticate your application itself with the SSO Service.
+User Consent: During the hosted login flow, the SSO service will automatically prompt users to grant the scopes you request (for example, `profile`, `email`, or `student_academics` for roll number / branch / semester access). Tokens issued for third-party apps include the granted scopes and the target application (`aud` claim).
+
+API Key: You must generate a Developer API Key from the student dashboard's Developer API Keys section. This key is used to authenticate your application itself with the SSO Service when calling `/api/sdk/*` endpoints.
 
 JavaScript Client SDK (Frontend Applications)
 Use this SDK for applications built with frameworks like React, Vue, or plain HTML/JS to handle user login and token management.
@@ -55,12 +57,25 @@ async function checkSession() {
     const validation = await ssoService.verifyToken(token);
 
     if (validation.valid) {
-        console.log("Session is valid. User:", validation.user.email);
+        console.log("Session is valid. Granted scopes:", validation.scopes);
     } else {
         console.log("Session expired. Please log in again.");
         ssoService.logout(); // Clear the expired local token
     }
 }
+
+4. Fetching Scoped Profile Data (fetchUserProfile)
+Once the user has granted consent, you can retrieve the approved profile fields:
+
+const token = ssoService.getAccessToken();
+const profileResult = await ssoService.fetchUserProfile(token);
+
+if (profileResult.success) {
+    console.log("User profile:", profileResult.profile);
+} else {
+    console.error("Failed to load user profile:", profileResult.message);
+}
+sso_client = SSOClient(api_key=YOUR_APP_API_KEY)
 
 Python Server SDK (Backend Applications)
 Use this SDK for securing your backend services (Resource Servers) built with Python (e.g., Flask, Django, FastAPI). The primary use case is token verification.
@@ -88,12 +103,20 @@ def protected_route_handler(request):
     token = auth_header.split(" ")[1]
 
     try:
-        # 2. Verify the token with the SSO Service
-        user_data = sso_client.verify_token(token)
+        # 2. Verify the token with the SSO service
+        verification = sso_client.verify_token(token)
+
+        # 3. Retrieve the consented user profile
+        profile = sso_client.get_user_profile(token)
         
-        # 3. If successful, grant access and use user data
-        return {"message": "Access granted", "user": user_data}, 200
+        # 4. If successful, grant access and use user data
+        return {
+            "message": "Access granted",
+            "user": profile["user"],
+            "scopes": profile["scopes"],
+            "app_id": profile["app_id"]
+        }, 200
         
     except SSOServiceError as e:
-        # 4. If verification fails (e.g., token expired), deny access
+        # 5. If verification fails (e.g., token expired), deny access
         return {"error": str(e), "message": "Invalid token"}, 401

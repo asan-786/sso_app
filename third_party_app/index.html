@@ -28,9 +28,71 @@
         // Base URL for the main SSO login page (change port if necessary)
         // Point to the standalone SSO login page served on port 8000
         const SSO_LOGIN_URL = "http://127.0.0.1:8000/sso-login";
+        const CLIENT_ID = "campusconnect-client";
+        const REQUESTED_SCOPES = "profile email student_academics";
 
         let currentUserName = "Student"; // State for displaying user name
-        let secureContent = "Click 'Logout' and 'Login via SSO' to load secure data."; // State for protected content
+        let secureContent = "Connect your SSO account to load personalized data."; // Status and guidance message
+        let currentProfile = null; // Holds consented profile details
+        let grantedScopes = []; // Holds the scopes granted by the user
+        let resourceDetails = null; // Holds secure resource information returned by the backend
+        let consentDenied = false; // Tracks whether the user denied the consent prompt
+
+        const defaultResourceDetails = {
+            title: "Protected University Resource",
+            content: "Authorize with SSO to view personalized protected content."
+        };
+
+        const ensureArray = (value) => {
+            if (Array.isArray(value)) return value;
+            if (!value) return [];
+            return [value];
+        };
+
+        const formatScopeLabel = (scope) => {
+            if (!scope || typeof scope !== "string") return "Unknown";
+            const cleaned = scope.replace(/[_-]+/g, " ").trim();
+            return cleaned
+                .split(" ")
+                .filter(Boolean)
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join(" ");
+        };
+
+        const deriveDisplayName = (rawName, email) => {
+            if (rawName && rawName.trim().length > 0) {
+                return rawName.trim();
+            }
+            if (email && email.length > 0) {
+                const prefix = email.split("@")[0] || "student";
+                return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+            }
+            return "Student";
+        };
+
+        const normalizeProfile = (rawProfile = {}, fallbackEmail = "student@example.com") => {
+            const email = rawProfile.email || fallbackEmail;
+            return {
+                name: deriveDisplayName(rawProfile.name, email),
+                email,
+                rollNo: rawProfile.rollNo || rawProfile.roll_no || "Not shared",
+                branch: rawProfile.branch || "Not shared",
+                semester: rawProfile.semester || "Not shared"
+            };
+        };
+
+        const applyProfileState = ({ profile, scopes, resource, statusMessage }) => {
+            const normalized = normalizeProfile(profile, profile?.email);
+            currentProfile = normalized;
+            currentUserName = normalized.name;
+            grantedScopes = ensureArray(scopes).map(scope => formatScopeLabel(scope));
+            if (grantedScopes.length === 0) {
+                grantedScopes = ["Profile", "Email", "Student Academics"];
+            }
+            resourceDetails = resource || defaultResourceDetails;
+            secureContent = statusMessage || "Secure data synced successfully.";
+            consentDenied = false;
+        };
 
         // --- Helper Functions for Token Management ---
 
@@ -42,11 +104,78 @@
             localStorage.setItem('sso_jwt_token', token);
         }
 
-        function clearSSOToken() {
+        function clearSSOToken(message) {
             localStorage.removeItem('sso_jwt_token');
             currentUserName = "Student";
-            secureContent = "Click 'Logout' and 'Login via SSO' to load secure data.";
+            secureContent = message || "Connect your SSO account to load personalized data.";
+            currentProfile = null;
+            grantedScopes = [];
+            resourceDetails = null;
+            consentDenied = false;
         }
+
+        const renderGrantedScopes = () => {
+            if (!Array.isArray(grantedScopes) || grantedScopes.length === 0) {
+                return `<span class="text-sm text-indigo-100/80">No scopes granted yet.</span>`;
+            }
+
+            return grantedScopes
+                .map(scope => `<span class="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">${scope}</span>`)
+                .join("");
+        };
+
+        const renderSecureContent = () => {
+            const profile = currentProfile || normalizeProfile({}, "student@example.com");
+            const scopesMarkup = renderGrantedScopes();
+            const resource = resourceDetails || defaultResourceDetails;
+            const statusStyle = consentDenied ? "text-red-100" : "text-indigo-50";
+            const statusMessage = secureContent;
+
+            const consentCta = consentDenied
+                ? `<button onclick="handleSsoRedirect()" class="mt-3 inline-flex items-center px-4 py-2 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition">
+                        Try Again &amp; Grant Access
+                   </button>`
+                : "";
+
+            return `
+                <div class="space-y-4 text-sm text-indigo-100/90">
+                    <div class="bg-white/10 border border-white/20 rounded-lg p-4">
+                        <p class="text-xs uppercase tracking-wide text-indigo-200">Status</p>
+                        <p class="text-sm ${statusStyle} mt-1">${statusMessage}</p>
+                        ${consentCta}
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="bg-white/20 border border-white/30 rounded-lg p-4">
+                            <p class="text-xs uppercase tracking-wide text-indigo-200">Full Name</p>
+                            <p class="text-lg font-semibold text-white">${profile.name}</p>
+                        </div>
+                        <div class="bg-white/20 border border-white/30 rounded-lg p-4">
+                            <p class="text-xs uppercase tracking-wide text-indigo-200">Email</p>
+                            <p class="text-lg font-semibold text-white">${profile.email}</p>
+                        </div>
+                        <div class="bg-white/20 border border-white/30 rounded-lg p-4">
+                            <p class="text-xs uppercase tracking-wide text-indigo-200">Roll Number</p>
+                            <p class="text-lg font-semibold text-white">${profile.rollNo}</p>
+                        </div>
+                        <div class="bg-white/20 border border-white/30 rounded-lg p-4">
+                            <p class="text-xs uppercase tracking-wide text-indigo-200">Branch & Semester</p>
+                            <p class="text-lg font-semibold text-white">${profile.branch}${profile.semester && profile.semester !== "Not shared" ? ` · Sem ${profile.semester}` : ""}</p>
+                        </div>
+                    </div>
+                    <div class="bg-white/10 border border-white/20 rounded-lg p-4">
+                        <p class="text-xs uppercase tracking-wide text-indigo-200">Granted Scopes</p>
+                        <div class="flex flex-wrap gap-2 mt-2">
+                            ${scopesMarkup}
+                        </div>
+                    </div>
+                    <div class="bg-white/10 border border-white/20 rounded-lg p-4">
+                        <p class="text-xs uppercase tracking-wide text-indigo-200">Secure Resource</p>
+                        <p class="text-sm text-indigo-50 font-semibold mt-1">${resource.title}</p>
+                        <p class="text-xs text-indigo-100/80 mt-2 leading-relaxed">${resource.content}</p>
+                    </div>
+                </div>
+            `;
+        };
 
         // --- Content Templates ---
 
@@ -78,8 +207,10 @@
                     
                     <!-- Secure Data from Backend -->
                     <div class="mt-4 p-4 border border-blue-300 bg-blue-700 rounded-lg">
-                        <p class="text-sm font-semibold mb-1">Protected Resource Access Status:</p>
-                        <p class="text-xs font-mono whitespace-pre-wrap">${secureContent}</p>
+                        <p class="text-sm font-semibold mb-3">Protected Resource Access Status:</p>
+                        <div class="text-xs sm:text-sm leading-relaxed">
+                            ${renderSecureContent()}
+                        </div>
                     </div>
                 </section>
 
@@ -167,8 +298,24 @@
         
         // Function to simulate a successful SSO flow for testing when the external SSO is unavailable.
         function simulateLogin() {
-            setSSOToken('simulated_jwt_token_for_testing');
-            fetchSecureData(); 
+            applyProfileState({
+                profile: {
+                    name: "Demo Student",
+                    email: "student@example.edu",
+                    rollNo: "23UCSE4001",
+                    branch: "Computer Science",
+                    semester: "7"
+                },
+                scopes: ["profile", "email", "student_academics"],
+                resource: {
+                    title: "Sample University Records",
+                    content: "This is placeholder content to demonstrate how secure data appears after a successful authorization."
+                },
+                statusMessage: "Displaying simulated data (not fetched from the live SSO service)."
+            });
+            localStorage.removeItem('sso_jwt_token');
+            window.location.hash = '#/dashboard';
+            router();
         }
 
 
@@ -180,7 +327,12 @@
             // The redirect URI must point to where the token handler starts: #/sso-success
             const redirectUri = `${currentAppUrl}#/sso-success`;
             
-            window.location.href = `${SSO_LOGIN_URL}?redirect_uri=${encodeURIComponent(redirectUri)}`;
+            consentDenied = false;
+            currentProfile = null;
+            grantedScopes = [];
+            secureContent = "Redirecting to the SSO service for authorization...";
+            
+            window.location.href = `${SSO_LOGIN_URL}?redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${encodeURIComponent(CLIENT_ID)}&scope=${encodeURIComponent(REQUESTED_SCOPES)}`;
         }
 
         // 2. Load Secure Data from Flask Backend
@@ -224,11 +376,17 @@
                     }
                 }
                 
-                // Success: Extract user name and protected content
-                let userEmail = data.access_granted_to || 'test@user.com';
-                const emailPrefix = userEmail.split('@')[0];
-                currentUserName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-                secureContent = JSON.stringify(data.resource_details, null, 2);
+                applyProfileState({
+                    profile: data.user || { email: data.access_granted_to },
+                    scopes: data.granted_scopes,
+                    resource: data.resource_details,
+                    statusMessage: `Secure data synced successfully at ${new Date().toLocaleTimeString()}.`
+                });
+
+                if (statusEl) {
+                    statusEl.textContent = "Secure data fetched successfully!";
+                }
+
                 window.location.hash = '#/dashboard';
                 
             } catch (error) {
@@ -243,7 +401,7 @@
                 }
                 
                 secureContent = `Error: Access Denied! ${userErrorMessage}`;
-                clearSSOToken();
+                clearSSOToken(secureContent);
                 window.location.hash = '#/login'; // Force login page on failure
             }
         }
@@ -262,6 +420,7 @@
                 // SSO REDIRECT PATH
                 const params = new URLSearchParams(hash.substring(hash.indexOf('?') + 1));
                 const token = params.get('token');
+                const error = params.get('error');
 
                 mainContainer.innerHTML = `<div class="p-8 text-center text-xl text-primary-blue">Processing SSO login...</div>`;
 
@@ -269,6 +428,12 @@
                 // We navigate to a temporary loading state to prevent the router loop
                 window.history.replaceState(null, null, window.location.pathname + '#/dashboard-loading'); 
 
+                if (error === 'access_denied') {
+                    clearSSOToken("You denied the data-sharing request. Reopen the SSO prompt to grant access when you're ready.");
+                    consentDenied = true;
+                    window.location.hash = '#/dashboard';
+                    return;
+                }
 
                 if (token) {
                     setSSOToken(token);
@@ -276,7 +441,9 @@
                     fetchSecureData();
                 } else {
                     // Handle missing token
-                    mainContainer.innerHTML = `<div class="p-8 text-center text-xl text-red-500">SSO Failed: Token missing in redirect URL.</div>`;
+                    secureContent = "SSO Failed: Token missing in redirect URL.";
+                    mainContainer.innerHTML = `<div class="p-8 text-center text-xl text-red-500">${secureContent}</div>`;
+                    clearSSOToken(secureContent);
                     window.location.hash = '#/login';
                 }
 
@@ -284,18 +451,30 @@
                 // DASHBOARD VIEW (Requires valid token and has been loaded)
                 mainContainer.innerHTML = dashboardContent();
                 appFooter.classList.remove('hidden');
-                mainContainer.classList.add('max-w-7xl', 'mx-auto');
+                mainContainer.classList.add('max-w-7xl', 'mx-auto', 'p-4');
                 document.title = "CampusConnect | Student Dashboard";
             } else if (getSSOToken() && hash !== '#/login') {
                  // Token exists but not yet on dashboard (e.g. user manually navigates to index.html)
                  // Start the data fetching process
                 fetchSecureData();
                 mainContainer.innerHTML = `<div class="p-8 text-center text-xl text-primary-blue min-h-screen flex items-center justify-center">Loading Dashboard...</div>`;
+            } else if (!getSSOToken() && (consentDenied || currentProfile) && hash === '#/dashboard') {
+                mainContainer.innerHTML = dashboardContent();
+                appFooter.classList.remove('hidden');
+                mainContainer.classList.add('max-w-7xl', 'mx-auto', 'p-4');
+                document.title = consentDenied ? "CampusConnect | Limited Access" : "CampusConnect | Student Dashboard";
 
             } else {
                 // LOGIN VIEW (Default or explicitly navigating to #/login)
                 mainContainer.innerHTML = loginFormHtml;
                 mainContainer.classList.add('flex', 'items-center', 'justify-center', 'min-h-screen', 'p-4');
+                if (consentDenied) {
+                    const statusMsg = mainContainer.querySelector('#status-message');
+                    if (statusMsg) {
+                        statusMsg.textContent = secureContent;
+                        statusMsg.classList.add('text-red-500', 'font-semibold');
+                    }
+                }
                 document.title = "CampusConnect | Student Login";
             }
         }

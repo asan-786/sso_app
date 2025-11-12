@@ -69,7 +69,7 @@ class SSOService {
      */
     async verifyToken(token) {
         try {
-            const response = await fetch(`${this.API_URL}/sdk/verify?token=${token}`, {
+            const response = await fetch(`${this.API_URL}/sdk/verify?token=${encodeURIComponent(token)}`, {
                 method: 'GET',
                 headers: {
                     'X-API-Key': this.API_KEY // Authentication header
@@ -79,14 +79,41 @@ class SSOService {
             const data = await response.json();
 
             if (!response.ok || !data.valid) {
-                return { valid: false, message: data.detail || "Invalid or expired token." };
+                return { valid: false, message: data.detail || data.error || "Invalid or expired token." };
             }
 
-            return { valid: true, user: data.user };
+            return { valid: true, user: data.user, scopes: data.scopes, appId: data.app_id };
 
         } catch (error) {
             console.error("SSO Token Verification Error:", error);
             return { valid: false, message: "Network error during verification." };
+        }
+    }
+
+    /**
+     * Fetches the scoped user profile after successful consent.
+     * @param {string} token - The JWT access token to use for retrieval.
+     * @returns {Promise<object>} The response containing user profile and scopes.
+     */
+    async fetchUserProfile(token) {
+        try {
+            const response = await fetch(`${this.API_URL}/sdk/user-profile?token=${encodeURIComponent(token)}`, {
+                method: 'GET',
+                headers: {
+                    'X-API-Key': this.API_KEY
+                }
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                return { success: false, message: data.detail || "Failed to fetch user profile." };
+            }
+
+            return { success: true, profile: data.user, scopes: data.scopes, appId: data.app_id };
+        } catch (error) {
+            console.error("SSO User Profile Error:", error);
+            return { success: false, message: "Network error while fetching user profile." };
         }
     }
 

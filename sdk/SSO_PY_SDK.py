@@ -59,7 +59,7 @@ class SSOClient:
         This is the most critical function for securing resource server endpoints.
         
         :param token: The JWT access token received from the client.
-        :return: A dictionary containing the validated user object.
+        :return: A dictionary containing validation status, user payload, scopes, and app id.
         :raises SSOServiceError: If the token is invalid or expired.
         """
         endpoint = f"{self.API_URL}/sdk/verify?token={token}"
@@ -70,10 +70,34 @@ class SSOClient:
             data = response.json()
             
             if response.status_code != 200 or not data.get("valid"):
-                raise SSOServiceError(data.get("detail", "Token validation failed"))
+                error_message = data.get("detail") or data.get("error") or "Token validation failed"
+                raise SSOServiceError(error_message)
             
-            return data["user"] # Returns the validated user object
+            return data
             
+        except requests.RequestException as e:
+            raise SSOServiceError(f"Network error: {e}")
+
+    def get_user_profile(self, token: str) -> Dict[str, Any]:
+        """
+        Retrieves the scoped user profile for a validated token. This should be
+        called after the user has granted consent for the requesting application.
+
+        :param token: The JWT access token received from the client.
+        :return: A dictionary containing the user profile, app id, and granted scopes.
+        :raises SSOServiceError: If the token is invalid or consent is missing.
+        """
+        endpoint = f"{self.API_URL}/sdk/user-profile?token={token}"
+
+        try:
+            response = requests.get(endpoint, headers=self.headers)
+            data = response.json()
+
+            if response.status_code != 200:
+                raise SSOServiceError(data.get("detail", "Failed to retrieve user profile"))
+
+            return data
+
         except requests.RequestException as e:
             raise SSOServiceError(f"Network error: {e}")
 
@@ -92,9 +116,14 @@ if __name__ == '__main__':
         print(f"Login successful. Access Token: {access_token[:10]}...")
         
         # 2. Verify the token (done by the Resource Server/Backend)
-        user_data = sso_client.verify_token(access_token)
+        verification = sso_client.verify_token(access_token)
         print("\nToken Verification Successful:")
-        print(json.dumps(user_data, indent=2))
+        print(json.dumps(verification, indent=2))
+
+        # 3. (Optional) Load the scoped user profile
+        profile = sso_client.get_user_profile(access_token)
+        print("\nUser Profile:")
+        print(json.dumps(profile, indent=2))
         
     except SSOServiceError as e:
         print(f"SSO Error: {e}")

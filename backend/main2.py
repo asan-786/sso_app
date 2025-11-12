@@ -12,6 +12,7 @@ import sqlite3
 import uuid
 import secrets
 import os
+from html import escape
 
 # ============================================
 # CONFIGURATION
@@ -117,6 +118,34 @@ def init_db():
         )
     """)
     
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_consents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            app_id TEXT NOT NULL,
+            scopes TEXT NOT NULL,
+            granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            revoked BOOLEAN DEFAULT FALSE,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (app_id) REFERENCES applications(id)
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_consents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL,
+            app_id TEXT NOT NULL,
+            redirect_uri TEXT NOT NULL,
+            scopes TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (app_id) REFERENCES applications(id)
+        )
+    """)
+    
     admin_email = "admin@example.com"
     cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
     if not cursor.fetchone():
@@ -134,6 +163,15 @@ def init_db():
             INSERT INTO users (name, email, password_hash, role, roll_no, branch, semester)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, ("Student User", student_email, student_password, "student", "23UCSE4001", "CSE", "7"))
+
+    demo_client_id = "campusconnect-client"
+    cursor.execute("SELECT id FROM applications WHERE client_id = ?", (demo_client_id,))
+    if not cursor.fetchone():
+        demo_app_id = str(uuid.uuid4())
+        cursor.execute("""
+            INSERT INTO applications (id, name, url, client_id, client_secret)
+            VALUES (?, ?, ?, ?, ?)
+        """, (demo_app_id, "CampusConnect Demo", "http://127.0.0.1:8080", demo_client_id, ""))
     
     conn.commit()
     conn.close()
@@ -219,6 +257,158 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+def normalize_scopes(scope_str: Optional[str]) -> List[str]:
+    if not scope_str:
+        return []
+    normalized = set()
+    for part in scope_str.replace(",", " ").split():
+        slug = part.strip().lower()
+        if slug:
+            normalized.add(slug)
+    return sorted(normalized)
+
+def scopes_to_string(scopes: List[str]) -> str:
+    return " ".join(sorted({scope.strip().lower() for scope in scopes if scope}))
+
+def get_application_by_client_id(client_id: str) -> Optional[sqlite3.Row]:
+    if not client_id:
+        return None
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM applications WHERE client_id = ?", (client_id,))
+    app = cursor.fetchone()
+    conn.close()
+    return app
+
+def get_application_by_id(app_id: str) -> Optional[sqlite3.Row]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    conn.close()
+    return app
+
+def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
+def user_has_consent(user_id: int, app_id: str, requested_scopes: List[str]) -> bool:
+    if not requested_scopes:
+        return True
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, scopes FROM user_consents
+        WHERE user_id = ? AND app_id = ? AND revoked = FALSE
+    """, (user_id, app_id))
+    consents = cursor.fetchall()
+    conn.close()
+
+    requested = set(requested_scopes)
+    for consent in consents:
+        existing = set(normalize_scopes(consent["scopes"]))
+        if requested.issubset(existing):
+            return True
+    return False
+
+def save_user_consent(user_id: int, app_id: str, scopes: List[str]) -> None:
+    normalized = normalize_scopes(" ".join(scopes))
+    if not normalized:
+        return
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, scopes FROM user_consents
+        WHERE user_id = ? AND app_id = ?
+        ORDER BY id DESC LIMIT 1
+    """, (user_id, app_id))
+    existing = cursor.fetchone()
+
+    if existing:
+        existing_scopes = set(normalize_scopes(existing["scopes"]))
+        merged = sorted(existing_scopes.union(normalized))
+        cursor.execute("""
+            UPDATE user_consents
+            SET scopes = ?, revoked = FALSE, granted_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (" ".join(merged), existing["id"]))
+    else:
+        cursor.execute("""
+            INSERT INTO user_consents (user_id, app_id, scopes)
+            VALUES (?, ?, ?)
+        """, (user_id, app_id, " ".join(normalized)))
+
+    conn.commit()
+    conn.close()
+
+SCOPE_FIELD_MAP = {
+    "profile": ["name"],
+    "email": ["email"],
+    "student_academics": ["roll_no", "branch", "semester"],
+    "role": ["role"]
+}
+
+def filter_user_data_by_scopes(user_row: sqlite3.Row, scopes: List[str]) -> dict:
+    allowed_scopes = set(scopes)
+    payload = {"id": user_row["id"]}
+
+    for scope in allowed_scopes:
+        fields = SCOPE_FIELD_MAP.get(scope, [])
+        for field in fields:
+            payload[field if field != "roll_no" else "rollNo"] = user_row[field]
+
+    # Always include name if nothing else (basic identifier)
+    if "name" not in payload:
+        payload["name"] = user_row["name"]
+
+    return payload
+
+def create_pending_consent(user_id: int, app_id: str, redirect_uri: str, scopes: List[str]) -> str:
+    token = secrets.token_urlsafe(48)
+    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO pending_consents (token, user_id, app_id, redirect_uri, scopes, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (token, user_id, app_id, redirect_uri, " ".join(scopes), expires_at))
+    conn.commit()
+    conn.close()
+
+    return token
+
+def get_pending_consent(token: str) -> Optional[sqlite3.Row]:
+    if not token:
+        return None
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT pc.*, u.email AS user_email, a.name AS app_name
+        FROM pending_consents pc
+        JOIN users u ON pc.user_id = u.id
+        JOIN applications a ON pc.app_id = a.id
+        WHERE pc.token = ?
+    """, (token,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def delete_pending_consent(token: str) -> None:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM pending_consents WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -276,10 +466,12 @@ def verify_refresh_token(token: str):
     
     return result["user_id"]
 
+JWT_DECODE_OPTIONS = {"verify_aud": False}
+
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options=JWT_DECODE_OPTIONS)
         email: str = payload.get("sub")
         token_type: str = payload.get("type")
         
@@ -412,11 +604,55 @@ def login(credentials: UserLogin):
     }
 
 # FIXED SSO LOGIN ENDPOINT FOR REDIRECT FLOW
+DEFAULT_SSO_SCOPES = ["profile", "email", "student_academics"]
+
+def build_consent_page(consent_token: str, app_name: str, scopes: List[str]) -> str:
+    scope_items = "".join(
+        f"<li class='flex items-center gap-2 text-gray-700'><span class='w-2 h-2 bg-indigo-500 rounded-full'></span>{scope.replace('_', ' ').replace('-', ' ').title()}</li>"
+        for scope in scopes
+    )
+    safe_token = escape(consent_token)
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Authorize Access</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-slate-100 min-h-screen flex items-center justify-center">
+        <div class="bg-white rounded-2xl shadow-xl p-10 max-w-lg w-full">
+            <h1 class="text-2xl font-bold text-gray-900 mb-2">Authorize {app_name}</h1>
+            <p class="text-gray-600 mb-4">
+                This application is requesting access to the following information from your SSO profile:
+            </p>
+            <ul class="space-y-2 mb-6">
+                {scope_items}
+            </ul>
+            <p class="text-sm text-gray-500 mb-6">
+                You can manage granted permissions later from your dashboard. Grant access?
+            </p>
+            <form method="POST" action="/consent/decision" class="flex flex-col gap-3">
+                <input type="hidden" name="consent_token" value="{safe_token}" />
+                <button type="submit" name="decision" value="approve" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-lg font-semibold transition">
+                    Allow Access
+                </button>
+                <button name="decision" value="deny" class="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold transition" type="submit">
+                    Deny
+                </button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
 @app.post("/login")
 def sso_login_redirect(
     email: str = Form(...),
     password: str = Form(...),
-    redirect_uri: str = Form(...)
+    redirect_uri: str = Form(...),
+    client_id: str = Form(...),
+    scope: Optional[str] = Form("profile email")
 ):
     """
     Handles user authentication for SSO flow and redirects to the third-party app
@@ -437,8 +673,30 @@ def sso_login_redirect(
         error_url = f"{redirect_uri}?error=invalid_credentials"
         return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
     
+    application = get_application_by_client_id(client_id)
+    if not application:
+        raise HTTPException(status_code=400, detail="Unknown client_id")
+
+    requested_scopes = normalize_scopes(scope) or DEFAULT_SSO_SCOPES
+
+    if not user_has_consent(user["id"], application["id"], requested_scopes):
+        consent_token = create_pending_consent(
+            user_id=user["id"],
+            app_id=application["id"],
+            redirect_uri=redirect_uri,
+            scopes=requested_scopes
+        )
+        consent_page = build_consent_page(consent_token, application["name"], requested_scopes)
+        return HTMLResponse(content=consent_page)
+
     # 1. Generate the Access Token
-    access_token, jti = create_access_token(data={"sub": user["email"]})
+    access_token, jti = create_access_token(
+        data={
+            "sub": user["email"],
+            "aud": application["id"],
+            "scopes": requested_scopes
+        }
+    )
     
     # 2. Construct the Redirect URL with token in HASH fragment
     # This is important: we use # (hash) instead of ? (query) for security
@@ -448,6 +706,49 @@ def sso_login_redirect(
     # 3. Redirect the browser
     return RedirectResponse(url=final_redirect_url, status_code=status.HTTP_302_FOUND)
 # END FIXED SSO LOGIN ENDPOINT
+
+@app.post("/consent/decision")
+def consent_decision(
+    consent_token: str = Form(...),
+    decision: str = Form(...)
+):
+    pending = get_pending_consent(consent_token)
+    if not pending:
+        return RedirectResponse(url="/?error=invalid_consent", status_code=status.HTTP_302_FOUND)
+
+    redirect_uri = pending["redirect_uri"]
+    app_id = pending["app_id"]
+    scopes = normalize_scopes(pending["scopes"])
+    user = get_user_by_email(pending["user_email"])
+    application = get_application_by_id(app_id)
+
+    if not user or not application:
+        delete_pending_consent(consent_token)
+        return RedirectResponse(url=f"{redirect_uri}?error=invalid_consent", status_code=status.HTTP_302_FOUND)
+
+    expires_at = datetime.fromisoformat(pending["expires_at"])
+    if datetime.utcnow() > expires_at:
+        delete_pending_consent(consent_token)
+        return RedirectResponse(url=f"{redirect_uri}?error=consent_expired", status_code=status.HTTP_302_FOUND)
+
+    decision_value = decision.lower()
+    if decision_value != "approve":
+        delete_pending_consent(consent_token)
+        return RedirectResponse(url=f"{redirect_uri}?error=access_denied", status_code=status.HTTP_302_FOUND)
+
+    save_user_consent(user["id"], application["id"], scopes)
+    delete_pending_consent(consent_token)
+
+    access_token, _ = create_access_token(
+        data={
+            "sub": user["email"],
+            "aud": application["id"],
+            "scopes": scopes
+        }
+    )
+
+    success_redirect = f"{redirect_uri}?token={access_token}"
+    return RedirectResponse(url=success_redirect, status_code=status.HTTP_302_FOUND)
 
 @app.post("/api/auth/refresh")
 def refresh_access_token(token_data: TokenRefresh):
@@ -473,7 +774,7 @@ def refresh_access_token(token_data: TokenRefresh):
 @app.post("/api/auth/verify")
 def verify_token(token_data: TokenVerify):
     try:
-        payload = jwt.decode(token_data.token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token_data.token, SECRET_KEY, algorithms=[ALGORITHM], options=JWT_DECODE_OPTIONS)
         return {
             "valid": True,
             "email": payload.get("sub"),
@@ -644,24 +945,64 @@ def sdk_login(credentials: UserLogin, current_app: dict = Depends(verify_api_key
 @app.get("/api/sdk/verify")
 def sdk_verify_token(token: str, current_app: dict = Depends(verify_api_key)):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options=JWT_DECODE_OPTIONS)
         email = payload.get("sub")
+        app_id = payload.get("aud")
+        scopes = payload.get("scopes") or DEFAULT_SSO_SCOPES
+        if isinstance(scopes, str):
+            scopes = normalize_scopes(scopes)
+
+        if not app_id:
+            return {"valid": False, "error": "Token missing audience (app) claim"}
         
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name, email, role FROM users WHERE email = ?", (email,))
-        user = cursor.fetchone()
-        conn.close()
+        user = get_user_by_email(email)
         
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+
+        if not user_has_consent(user["id"], app_id, scopes):
+            return {"valid": False, "error": "Required consent not granted"}
+
+        filtered_user = filter_user_data_by_scopes(user, scopes)
         
         return {
             "valid": True,
-            "user": dict(user)
+            "user": filtered_user,
+            "scopes": scopes,
+            "app_id": app_id
         }
-    except JWTError:
-        return {"valid": False}
+    except JWTError as exc:
+        return {"valid": False, "error": str(exc)}
+
+@app.get("/api/sdk/user-profile")
+def sdk_user_profile(token: str, current_app: dict = Depends(verify_api_key)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options=JWT_DECODE_OPTIONS)
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
+
+    email = payload.get("sub")
+    app_id = payload.get("aud")
+    scopes = payload.get("scopes") or DEFAULT_SSO_SCOPES
+    if isinstance(scopes, str):
+        scopes = normalize_scopes(scopes)
+
+    if not email or not app_id:
+        raise HTTPException(status_code=400, detail="Token missing required claims")
+
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user_has_consent(user["id"], app_id, scopes):
+        raise HTTPException(status_code=403, detail="User has not granted required permissions")
+
+    filtered_user = filter_user_data_by_scopes(user, scopes)
+    return {
+        "user": filtered_user,
+        "app_id": app_id,
+        "scopes": scopes
+    }
 
 # ============================================
 # USER MANAGEMENT
@@ -944,10 +1285,12 @@ def sso_login_page():
         <script>
             const urlParams = new URLSearchParams(window.location.search);
             const redirectUri = urlParams.get('redirect_uri');
+            const clientId = urlParams.get('client_id');
+            const scopeParam = urlParams.get('scope') || 'profile email';
 
-            if (!redirectUri) {
+            if (!redirectUri || !clientId) {
                 document.getElementById('error-message').textContent = 
-                    'Error: No redirect URI provided.';
+                    'Error: Missing redirect_uri or client_id.';
                 document.getElementById('error-message').classList.remove('hidden');
                 document.getElementById('sso-login-form').style.display = 'none';
             }
@@ -978,6 +1321,18 @@ def sso_login_page():
                     input.value = value;
                     form.appendChild(input);
                 }
+
+                const clientIdField = document.createElement('input');
+                clientIdField.type = 'hidden';
+                clientIdField.name = 'client_id';
+                clientIdField.value = clientId;
+                form.appendChild(clientIdField);
+
+                const scopeField = document.createElement('input');
+                scopeField.type = 'hidden';
+                scopeField.name = 'scope';
+                scopeField.value = scopeParam;
+                form.appendChild(scopeField);
 
                 document.body.appendChild(form);
                 form.submit();
