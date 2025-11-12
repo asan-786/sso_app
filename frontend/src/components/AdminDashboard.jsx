@@ -1,8 +1,68 @@
 import React, { useState, useEffect } from "react";
-import { useAuth } from "./AuthContext";
-import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, UserPlus, Link2 } from "lucide-react";
+import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, UserPlus, Link2, Search, X, ChevronDown } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000/api";
+
+// Auth hook that works with your FastAPI backend
+const useAuth = () => {
+  const [authData, setAuthData] = useState(null);
+  
+  useEffect(() => {
+    // Check for token in localStorage
+    const token = localStorage.getItem("access_token");
+    const userStr = localStorage.getItem("user");
+    
+    if (token && userStr) {
+      setAuthData({
+        token,
+        user: JSON.parse(userStr)
+      });
+    } else {
+      // Check URL for token (from SSO redirect)
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlToken = urlParams.get('token');
+      
+      if (urlToken) {
+        // Verify token with backend
+        fetch(`${API_URL}/auth/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: urlToken })
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.valid) {
+            // Fetch user details
+            fetch(`${API_URL}/auth/me`, {
+              headers: { 'Authorization': `Bearer ${urlToken}` }
+            })
+            .then(res => res.json())
+            .then(userData => {
+              localStorage.setItem("access_token", urlToken);
+              localStorage.setItem("user", JSON.stringify(userData));
+              setAuthData({ token: urlToken, user: userData });
+              // Clean URL
+              window.history.replaceState({}, document.title, window.location.pathname);
+            });
+          }
+        });
+      }
+    }
+  }, []);
+  
+  const logout = () => {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user");
+    setAuthData(null);
+    window.location.reload();
+  };
+  
+  return {
+    user: authData?.user || null,
+    token: authData?.token || null,
+    logout
+  };
+};
 
 const AdminDashboard = () => {
   const { user, logout, token } = useAuth();
@@ -23,6 +83,10 @@ const AdminDashboard = () => {
   const [showMapModal, setShowMapModal] = useState(false);
   const [selectedApp, setSelectedApp] = useState(null);
   const [mappingEmail, setMappingEmail] = useState("");
+
+  // Search and sort state for authorized users
+  const [searchQueries, setSearchQueries] = useState({});
+  const [sortOrders, setSortOrders] = useState({});
 
   // Load users from backend
   useEffect(() => {
@@ -64,8 +128,7 @@ const AdminDashboard = () => {
   };
 
   // Add new application
-  const handleAddApp = async (e) => {
-    e.preventDefault();
+  const handleAddApp = async () => {
     if (!newApp.name || !newApp.url) {
       alert("Please fill required fields (Name and URL)");
       return;
@@ -92,8 +155,7 @@ const AdminDashboard = () => {
   };
 
   // Update application
-  const handleUpdateApp = async (e) => {
-    e.preventDefault();
+  const handleUpdateApp = async () => {
     if (!editingApp.name || !editingApp.url) {
       alert("Please fill required fields");
       return;
@@ -219,6 +281,43 @@ const AdminDashboard = () => {
       console.error("Error updating role:", err);
       alert("Failed to update role");
     }
+  };
+
+  // Filter and sort authorized users
+  const getFilteredAndSortedUsers = (appId, authorizedEmails) => {
+    if (!authorizedEmails || authorizedEmails.length === 0) return [];
+    
+    const searchQuery = (searchQueries[appId] || "").toLowerCase();
+    const sortOrder = sortOrders[appId] || "asc";
+    
+    let filtered = authorizedEmails.filter(email => 
+      email.toLowerCase().includes(searchQuery)
+    );
+    
+    filtered.sort((a, b) => {
+      if (sortOrder === "asc") {
+        return a.localeCompare(b);
+      } else {
+        return b.localeCompare(a);
+      }
+    });
+    
+    return filtered;
+  };
+
+  const handleSearchChange = (appId, value) => {
+    setSearchQueries(prev => ({ ...prev, [appId]: value }));
+  };
+
+  const toggleSortOrder = (appId) => {
+    setSortOrders(prev => ({ 
+      ...prev, 
+      [appId]: prev[appId] === "asc" ? "desc" : "asc" 
+    }));
+  };
+
+  const clearSearch = (appId) => {
+    setSearchQueries(prev => ({ ...prev, [appId]: "" }));
   };
 
   const stats = [
@@ -385,7 +484,7 @@ const AdminDashboard = () => {
                 <h2 className="text-lg font-bold text-gray-800 mb-4">Manage Applications</h2>
 
                 {/* Add/Edit App Form */}
-                <form onSubmit={editingApp ? handleUpdateApp : handleAddApp} className="space-y-3 mb-6 p-4 bg-gray-50 rounded-lg">
+                <div className="space-y-3 mb-6 p-4 bg-gray-50 rounded-lg">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <input
                       type="text"
@@ -396,7 +495,6 @@ const AdminDashboard = () => {
                         : setNewApp({...newApp, name: e.target.value})
                       }
                       className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
-                      required
                     />
                     <input
                       type="url"
@@ -407,11 +505,10 @@ const AdminDashboard = () => {
                         : setNewApp({...newApp, url: e.target.value})
                       }
                       className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
-                      required
                     />
                     <input
                       type="text"
-                      placeholder="Client ID (optional)"
+                      placeholder="Client ID"
                       value={editingApp ? editingApp.client_id : newApp.client_id}
                       onChange={(e) => editingApp 
                         ? setEditingApp({...editingApp, client_id: e.target.value})
@@ -421,7 +518,7 @@ const AdminDashboard = () => {
                     />
                     <input
                       type="password"
-                      placeholder="Client Secret (optional)"
+                      placeholder="Client Secret"
                       value={editingApp ? editingApp.client_secret : newApp.client_secret}
                       onChange={(e) => editingApp 
                         ? setEditingApp({...editingApp, client_secret: e.target.value})
@@ -431,12 +528,14 @@ const AdminDashboard = () => {
                     />
                   </div>
                   <div className="flex gap-2">
-                    <button type="submit" className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">
+                    <button 
+                      onClick={editingApp ? handleUpdateApp : handleAddApp}
+                      className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700"
+                    >
                       {editingApp ? "Update Application" : "Add Application"}
                     </button>
                     {editingApp && (
                       <button 
-                        type="button" 
                         onClick={() => setEditingApp(null)}
                         className="bg-gray-300 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-400"
                       >
@@ -444,73 +543,126 @@ const AdminDashboard = () => {
                       </button>
                     )}
                   </div>
-                </form>
+                </div>
 
                 {/* Applications List */}
                 <div className="space-y-4">
-                  {apps.map((app) => (
-                    <div key={app.id} className="border border-gray-200 rounded-lg p-4">
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-gray-800 text-lg">{app.name}</h3>
-                          <p className="text-sm text-gray-500">{app.url}</p>
-                          {app.client_id && (
-                            <p className="text-xs text-gray-400 mt-1">Client ID: {app.client_id}</p>
-                          )}
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => setEditingApp(app)}
-                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
-                            title="Edit"
-                          >
-                            <Edit2 size={18} />
-                          </button>
-                          <button
-                            onClick={() => {
-                              setSelectedApp(app);
-                              setShowMapModal(true);
-                            }}
-                            className="p-2 text-green-600 hover:bg-green-50 rounded-lg"
-                            title="Map User"
-                          >
-                            <UserPlus size={18} />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteApp(app.id)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
-                            title="Delete"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        </div>
-                      </div>
-                      
-                      {/* Authorized Users */}
-                      {app.authorized_emails && app.authorized_emails.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-gray-200">
-                          <p className="text-sm font-medium text-gray-700 mb-2">Authorized Users:</p>
-                          <div className="flex flex-wrap gap-2">
-                            {app.authorized_emails.map((email) => (
-                              <span
-                                key={email}
-                                className="inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs"
-                              >
-                                {email}
-                                <button
-                                  onClick={() => handleUnmapUser(email, app.id)}
-                                  className="hover:text-red-600"
-                                  title="Remove access"
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            ))}
+                  {apps.map((app) => {
+                    const filteredUsers = getFilteredAndSortedUsers(app.id, app.authorized_emails);
+                    const hasUsers = app.authorized_emails && app.authorized_emails.length > 0;
+                    
+                    return (
+                      <div key={app.id} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-gray-800 text-lg">{app.name}</h3>
+                            <p className="text-sm text-gray-500">{app.url}</p>
+                            {app.client_id && (
+                              <p className="text-xs text-gray-400 mt-1">Client ID: {app.client_id}</p>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setEditingApp(app)}
+                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
+                              title="Edit"
+                            >
+                              <Edit2 size={18} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSelectedApp(app);
+                                setShowMapModal(true);
+                              }}
+                              className="p-2 text-green-600 hover:bg-green-50 rounded-lg"
+                              title="Map User"
+                            >
+                              <UserPlus size={18} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteApp(app.id)}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
+                              title="Delete"
+                            >
+                              <Trash2 size={18} />
+                            </button>
                           </div>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        
+                        {/* Authorized Users with Search and Sort */}
+                        {hasUsers && (
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <div className="flex items-center justify-between mb-3">
+                              <p className="text-sm font-medium text-gray-700">
+                                Authorized Users ({app.authorized_emails.length})
+                              </p>
+                              
+                              {/* Search and Sort Controls */}
+                              <div className="flex items-center gap-2">
+                                {/* Search Input */}
+                                <div className="relative">
+                                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
+                                  <input
+                                    type="text"
+                                    placeholder="Search users..."
+                                    value={searchQueries[app.id] || ""}
+                                    onChange={(e) => handleSearchChange(app.id, e.target.value)}
+                                    className="pl-9 pr-8 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                  />
+                                  {searchQueries[app.id] && (
+                                    <button
+                                      onClick={() => clearSearch(app.id)}
+                                      className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    >
+                                      <X size={16} />
+                                    </button>
+                                  )}
+                                </div>
+                                
+                                {/* Sort Button */}
+                                <button
+                                  onClick={() => toggleSortOrder(app.id)}
+                                  className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                                  title={`Sort ${sortOrders[app.id] === "asc" ? "Z-A" : "A-Z"}`}
+                                >
+                                  Sort
+                                  <ChevronDown 
+                                    size={16} 
+                                    className={`transform transition-transform ${
+                                      sortOrders[app.id] === "desc" ? "rotate-180" : ""
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+                            </div>
+                            
+                            {/* User Tags */}
+                            {filteredUsers.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {filteredUsers.map((email) => (
+                                  <span
+                                    key={email}
+                                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-100 text-green-700 rounded-full text-sm"
+                                  >
+                                    {email}
+                                    <button
+                                      onClick={() => handleUnmapUser(email, app.id)}
+                                      className="hover:text-red-600 font-bold"
+                                      title="Remove access"
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-500 italic">No users found matching your search.</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
