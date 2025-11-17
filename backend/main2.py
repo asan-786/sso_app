@@ -355,6 +355,19 @@ def save_user_consent(user_id: int, app_id: str, scopes: List[str]) -> None:
             VALUES (?, ?, ?)
         """, (user_id, app_id, " ".join(normalized)))
 
+    # Ensure the application appears in the student's assigned applications list
+    cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+    user_row = cursor.fetchone()
+    if user_row and user_row["email"]:
+        cursor.execute("""
+            INSERT INTO user_app_access (user_email, app_id)
+            SELECT ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_app_access
+                WHERE user_email = ? AND app_id = ?
+            )
+        """, (user_row["email"], app_id, user_row["email"], app_id))
+
     conn.commit()
     conn.close()
 
@@ -1311,6 +1324,9 @@ def root():
 def health():
     return {"status": "ok", "modules": ["auth", "token_management", "sdk_ready", "app_management"]}
 
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+FRONTEND_REGISTER_URL = os.getenv("FRONTEND_REGISTER_URL", f"{FRONTEND_BASE_URL}?view=register")
+
 @app.get("/sso-login", response_class=HTMLResponse)
 def sso_login_page():
     """Serves the SSO login page for third-party applications"""
@@ -1369,6 +1385,12 @@ def sso_login_page():
                 >
                     Sign In
                 </button>
+                <p class="text-center text-sm text-gray-500">
+                    New here?
+                    <button type="button" id="register-link" class="text-indigo-600 font-semibold hover:underline">
+                        Create an account
+                    </button>
+                </p>
             </form>
 
             <p class="text-center mt-6 text-sm text-gray-500">
@@ -1382,18 +1404,23 @@ def sso_login_page():
             const clientId = urlParams.get('client_id');
             const scopeParam = urlParams.get('scope') || 'profile email';
 
+            const loginForm = document.getElementById('sso-login-form');
+            const errorDiv = document.getElementById('error-message');
+
             if (!redirectUri || !clientId) {
-                document.getElementById('error-message').textContent = 
-                    'Error: Missing redirect_uri or client_id.';
-                document.getElementById('error-message').classList.remove('hidden');
-                document.getElementById('sso-login-form').style.display = 'none';
+                errorDiv.textContent = 'Error: Missing redirect_uri or client_id.';
+                errorDiv.classList.remove('hidden');
+                loginForm.style.display = 'none';
             }
 
-            document.getElementById('sso-login-form').addEventListener('submit', async (e) => {
+            document.getElementById('register-link').addEventListener('click', () => {
+                window.location.href = "__FRONTEND_REGISTER_URL__";
+            });
+
+            loginForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 
                 const submitBtn = document.getElementById('submit-btn');
-                const errorDiv = document.getElementById('error-message');
                 
                 submitBtn.disabled = true;
                 submitBtn.textContent = 'Signing in...';
@@ -1435,7 +1462,7 @@ def sso_login_page():
     </body>
     </html>
     """
-    return HTMLResponse(content=html_content)
+    return HTMLResponse(content=html_content.replace("__FRONTEND_REGISTER_URL__", FRONTEND_REGISTER_URL))
 
 if __name__ == "__main__":
     import uvicorn

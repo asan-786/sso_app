@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, UserPlus, Link2, Search, X, ChevronDown } from "lucide-react";
+import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, Search, ChevronDown, X } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000/api";
 
@@ -75,21 +75,12 @@ const AdminDashboard = () => {
   // App form state
   const [newApp, setNewApp] = useState({ 
     name: "", 
-    url: "", 
-    client_id: "", 
-    client_secret: "" 
+    url: ""
   });
   const [editingApp, setEditingApp] = useState(null);
-  
-  // Mapping state
-  const [showMapModal, setShowMapModal] = useState(false);
-  const [selectedApp, setSelectedApp] = useState(null);
-  const [mappingEmail, setMappingEmail] = useState("");
-
-  // Search and sort state for authorized users
   const [searchQueries, setSearchQueries] = useState({});
   const [sortOrders, setSortOrders] = useState({});
-
+  
   // Load users from backend
   useEffect(() => {
     if (!token) return;
@@ -167,7 +158,7 @@ const AdminDashboard = () => {
       
       await loadApps();
       await loadRemovalLogs();
-      setNewApp({ name: "", url: "", client_id: "", client_secret: "" });
+      setNewApp({ name: "", url: "" });
       alert("App added successfully!");
     } catch (err) {
       console.error("Error adding app:", err);
@@ -228,65 +219,6 @@ const AdminDashboard = () => {
     }
   };
 
-  // Map user to application
-  const handleMapUser = async () => {
-    if (!mappingEmail || !selectedApp) {
-      alert("Please enter an email");
-      return;
-    }
-    
-    try {
-      const res = await fetch(`${API_URL}/map`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          email: mappingEmail,
-          app_id: selectedApp.id
-        }),
-      });
-      
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
-      await loadApps();
-      setShowMapModal(false);
-      setMappingEmail("");
-      alert("User mapped successfully!");
-    } catch (err) {
-      console.error("Error mapping user:", err);
-      alert("Failed to map user");
-    }
-  };
-
-  // Unmap user from application
-  const handleUnmapUser = async (email, appId) => {
-    if (!confirm(`Remove access for ${email}?`)) return;
-    
-    try {
-      const res = await fetch(`${API_URL}/unmap`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          email: email,
-          app_id: appId
-        }),
-      });
-      
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
-      await loadApps();
-      alert("User access removed!");
-    } catch (err) {
-      console.error("Error unmapping user:", err);
-      alert("Failed to remove access");
-    }
-  };
-
   // Update user role
   const handleRoleChange = async (userId, newRole) => {
     try {
@@ -305,41 +237,32 @@ const AdminDashboard = () => {
     }
   };
 
-  // Filter and sort authorized users
-  const getFilteredAndSortedUsers = (appId, authorizedEmails) => {
-    if (!authorizedEmails || authorizedEmails.length === 0) return [];
-    
-    const searchQuery = (searchQueries[appId] || "").toLowerCase();
-    const sortOrder = sortOrders[appId] || "asc";
-    
-    let filtered = authorizedEmails.filter(email => 
-      email.toLowerCase().includes(searchQuery)
+  const getFilteredUsers = (appId, emails) => {
+    if (!emails || emails.length === 0) return [];
+    const query = (searchQueries[appId] || "").toLowerCase();
+    const order = sortOrders[appId] || "asc";
+    let filtered = emails.filter((email) =>
+      email.toLowerCase().includes(query)
     );
-    
-    filtered.sort((a, b) => {
-      if (sortOrder === "asc") {
-        return a.localeCompare(b);
-      } else {
-        return b.localeCompare(a);
-      }
-    });
-    
+    filtered.sort((a, b) =>
+      order === "asc" ? a.localeCompare(b) : b.localeCompare(a)
+    );
     return filtered;
   };
 
   const handleSearchChange = (appId, value) => {
-    setSearchQueries(prev => ({ ...prev, [appId]: value }));
-  };
-
-  const toggleSortOrder = (appId) => {
-    setSortOrders(prev => ({ 
-      ...prev, 
-      [appId]: prev[appId] === "asc" ? "desc" : "asc" 
-    }));
+    setSearchQueries((prev) => ({ ...prev, [appId]: value }));
   };
 
   const clearSearch = (appId) => {
-    setSearchQueries(prev => ({ ...prev, [appId]: "" }));
+    setSearchQueries((prev) => ({ ...prev, [appId]: "" }));
+  };
+
+  const toggleSortOrder = (appId) => {
+    setSortOrders((prev) => ({
+      ...prev,
+      [appId]: prev[appId] === "asc" ? "desc" : "asc",
+    }));
   };
 
   const stats = [
@@ -528,26 +451,6 @@ const AdminDashboard = () => {
                       }
                       className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
                     />
-                    <input
-                      type="text"
-                      placeholder="Client ID"
-                      value={editingApp ? editingApp.client_id : newApp.client_id}
-                      onChange={(e) => editingApp 
-                        ? setEditingApp({...editingApp, client_id: e.target.value})
-                        : setNewApp({...newApp, client_id: e.target.value})
-                      }
-                      className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <input
-                      type="password"
-                      placeholder="Client Secret"
-                      value={editingApp ? editingApp.client_secret : newApp.client_secret}
-                      onChange={(e) => editingApp 
-                        ? setEditingApp({...editingApp, client_secret: e.target.value})
-                        : setNewApp({...newApp, client_secret: e.target.value})
-                      }
-                      className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
-                    />
                   </div>
                   <div className="flex gap-2">
                     <button 
@@ -570,8 +473,8 @@ const AdminDashboard = () => {
                 {/* Applications List */}
                 <div className="space-y-4">
                   {apps.map((app) => {
-                    const filteredUsers = getFilteredAndSortedUsers(app.id, app.authorized_emails);
                     const hasUsers = app.authorized_emails && app.authorized_emails.length > 0;
+                    const filteredUsers = getFilteredUsers(app.id, app.authorized_emails);
                     
                     return (
                       <div key={app.id} className="border border-gray-200 rounded-lg p-4">
@@ -592,16 +495,6 @@ const AdminDashboard = () => {
                               <Edit2 size={18} />
                             </button>
                             <button
-                              onClick={() => {
-                                setSelectedApp(app);
-                                setShowMapModal(true);
-                              }}
-                              className="p-2 text-green-600 hover:bg-green-50 rounded-lg"
-                              title="Map User"
-                            >
-                              <UserPlus size={18} />
-                            </button>
-                            <button
                               onClick={() => handleDeleteApp(app.id)}
                               className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
                               title="Delete"
@@ -614,19 +507,16 @@ const AdminDashboard = () => {
                         {/* Authorized Users with Search and Sort */}
                         {hasUsers && (
                           <div className="mt-3 pt-3 border-t border-gray-200">
-                            <div className="flex items-center justify-between mb-3">
+                            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-3">
                               <p className="text-sm font-medium text-gray-700">
-                                Authorized Users ({app.authorized_emails.length})
+                                Authorized Users ({filteredUsers.length}/{app.authorized_emails.length})
                               </p>
-                              
-                              {/* Search and Sort Controls */}
                               <div className="flex items-center gap-2">
-                                {/* Search Input */}
                                 <div className="relative">
                                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
                                   <input
                                     type="text"
-                                    placeholder="Search users..."
+                                    placeholder="Search email"
                                     value={searchQueries[app.id] || ""}
                                     onChange={(e) => handleSearchChange(app.id, e.target.value)}
                                     className="pl-9 pr-8 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -640,25 +530,18 @@ const AdminDashboard = () => {
                                     </button>
                                   )}
                                 </div>
-                                
-                                {/* Sort Button */}
                                 <button
                                   onClick={() => toggleSortOrder(app.id)}
                                   className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
-                                  title={`Sort ${sortOrders[app.id] === "asc" ? "Z-A" : "A-Z"}`}
                                 >
                                   Sort
-                                  <ChevronDown 
-                                    size={16} 
-                                    className={`transform transition-transform ${
-                                      sortOrders[app.id] === "desc" ? "rotate-180" : ""
-                                    }`}
+                                  <ChevronDown
+                                    size={16}
+                                    className={`transform transition-transform ${sortOrders[app.id] === "desc" ? "rotate-180" : ""}`}
                                   />
                                 </button>
                               </div>
                             </div>
-                            
-                            {/* User Tags */}
                             {filteredUsers.length > 0 ? (
                               <div className="flex flex-wrap gap-2">
                                 {filteredUsers.map((email) => (
@@ -667,18 +550,11 @@ const AdminDashboard = () => {
                                     className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-100 text-green-700 rounded-full text-sm"
                                   >
                                     {email}
-                                    <button
-                                      onClick={() => handleUnmapUser(email, app.id)}
-                                      className="hover:text-red-600 font-bold"
-                                      title="Remove access"
-                                    >
-                                      ×
-                                    </button>
                                   </span>
                                 ))}
                               </div>
                             ) : (
-                              <p className="text-sm text-gray-500 italic">No users found matching your search.</p>
+                              <p className="text-sm text-gray-500 italic">No users match your search.</p>
                             )}
                           </div>
                         )}
@@ -733,40 +609,6 @@ const AdminDashboard = () => {
         </div>
       </div>
 
-      {/* Map User Modal */}
-      {showMapModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-bold text-gray-800 mb-4">
-              Map User to {selectedApp?.name}
-            </h3>
-            <input
-              type="email"
-              placeholder="Enter user email"
-              value={mappingEmail}
-              onChange={(e) => setMappingEmail(e.target.value)}
-              className="w-full px-4 py-2 border rounded-lg mb-4 focus:ring-2 focus:ring-indigo-500"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleMapUser}
-                className="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700"
-              >
-                Map User
-              </button>
-              <button
-                onClick={() => {
-                  setShowMapModal(false);
-                  setMappingEmail("");
-                }}
-                className="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-400"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

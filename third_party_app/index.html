@@ -397,7 +397,11 @@
                     statusEl.textContent = "Secure data fetched successfully!";
                 }
 
-                window.location.hash = '#/dashboard';
+                if (window.location.hash !== '#/dashboard') {
+                    window.location.hash = '#/dashboard';
+                } else {
+                    router();
+                }
                 
             } catch (error) {
                 console.error("Secure Data Fetch Error:", error.message);
@@ -458,6 +462,11 @@
                 }
 
             } else if (getSSOToken() && hash === '#/dashboard') {
+                if (!hasSSOData) {
+                    mainContainer.innerHTML = `<div class="p-8 text-center text-xl text-primary-blue min-h-screen flex items-center justify-center">Fetching secure data...</div>`;
+                    fetchSecureData();
+                    return;
+                }
                 // DASHBOARD VIEW (Requires valid token and has been loaded)
                 mainContainer.innerHTML = dashboardContent();
                 appFooter.classList.remove('hidden');
@@ -501,10 +510,9 @@
 
         window.onload = function() {
             // Initial load check
-            if (getSSOToken() && window.location.hash !== '#/dashboard') {
-                // If the user has a token but didn't land on dashboard, try to load it.
+            if (getSSOToken()) {
                 fetchSecureData();
-            } else if (!getSSOToken() && !window.location.hash) {
+            } else if (!window.location.hash) {
                 // If no token and no hash, default to login.
                 window.location.hash = '#/login';
             }

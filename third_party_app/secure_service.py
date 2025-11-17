@@ -39,11 +39,21 @@ def require_sso_token():
         verification = sso_client.verify_token(token)
         profile = sso_client.get_user_profile(token)
 
+        # Combine user info from both verification and profile responses
+        v_user = verification.get("user") or {}
+        p_user = profile.get("user") or {}
+        combined_user = {**v_user, **p_user}
+
+        # Ensure academic fields exist, even if not shared
+        combined_user.setdefault("rollNo", combined_user.get("roll_no", "Not shared"))
+        combined_user.setdefault("branch", combined_user.get("branch", "Not shared"))
+        combined_user.setdefault("semester", combined_user.get("semester", "Not shared"))
+
         # Store both verification details and profile in request context
         request.sso_verification = verification
-        request.sso_user = profile["user"]
-        request.sso_scopes = profile.get("scopes", [])
-        request.sso_app_id = profile.get("app_id")
+        request.sso_user = combined_user
+        request.sso_scopes = profile.get("scopes", verification.get("scopes", []))
+        request.sso_app_id = profile.get("app_id", verification.get("app_id"))
         return None # No error, continue with the request
         
     except SSOServiceError as e:
@@ -103,7 +113,7 @@ def sso_success():
 
 
 if __name__ == "__main__":
-    # NOTE: Run this Flask app on a different port (8080) than your FastAPI SSO backend (3000)
+    # NOTE: Run this Flask app on a different port (8080) than your FastAPI SSO backend (8000)
     print("Starting Third-Party Resource Server on http://127.0.0.1:8080")
-    print("Ensure main SSO backend is running on http://localhost:3000")
+    print("Ensure main SSO backend is running on http://127.0.0.1:8000")
     app.run(host="0.0.0.0", port=8080)
