@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi.responses import RedirectResponse # ADDED: For SSO redirect
@@ -128,6 +128,17 @@ def init_db():
             revoked BOOLEAN DEFAULT FALSE,
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (app_id) REFERENCES applications(id)
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_removal_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_email TEXT NOT NULL,
+            user_name TEXT,
+            app_id TEXT NOT NULL,
+            app_name TEXT,
+            removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
@@ -369,6 +380,15 @@ def filter_user_data_by_scopes(user_row: sqlite3.Row, scopes: List[str]) -> dict
 
     return payload
 
+def build_user_claims(name: str, email: str, roll_no: Optional[str], branch: Optional[str], semester: Optional[str]):
+    return {
+        "name": name,
+        "email": email,
+        "rollNo": roll_no,
+        "branch": branch,
+        "semester": semester
+    }
+
 def create_pending_consent(user_id: int, app_id: str, redirect_uri: str, scopes: List[str]) -> str:
     token = secrets.token_urlsafe(48)
     expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
@@ -406,6 +426,16 @@ def delete_pending_consent(token: str) -> None:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM pending_consents WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+def log_app_removal(user_email: str, user_name: str, app_id: str, app_name: str):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO app_removal_logs (user_email, user_name, app_id, app_name)
+        VALUES (?, ?, ?, ?)
+    """, (user_email, user_name, app_id, app_name))
     conn.commit()
     conn.close()
 
@@ -1192,6 +1222,70 @@ def get_user_apps(email: str, current_user: dict = Depends(get_current_user)):
     conn.close()
     
     return apps
+
+@app.post("/api/user/apps/{app_id}/remove")
+def remove_my_app(app_id: str, current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT name FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    cursor.execute("""
+        SELECT id FROM user_app_access
+        WHERE user_email = ? AND app_id = ?
+    """, (current_user["email"], app_id))
+    mapping = cursor.fetchone()
+    if not mapping:
+        conn.close()
+        raise HTTPException(status_code=404, detail="You do not have access to this application")
+
+    cursor.execute("""
+        DELETE FROM user_app_access
+        WHERE user_email = ? AND app_id = ?
+    """, (current_user["email"], app_id))
+    conn.commit()
+    conn.close()
+
+    log_app_removal(current_user["email"], current_user["name"], app_id, app["name"])
+
+    return {"message": f"Removed access to {app['name']}"}
+
+@app.get("/api/admin/removals")
+def get_removal_logs(current_user: dict = Depends(require_admin)):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, user_email, user_name, app_id, app_name, removed_at
+        FROM app_removal_logs
+        ORDER BY removed_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    logs = []
+    for row in rows:
+        entry = dict(row)
+        raw_ts = entry.get("removed_at")
+        parsed = None
+        if isinstance(raw_ts, str):
+            try:
+                parsed = datetime.fromisoformat(raw_ts)
+            except ValueError:
+                try:
+                    parsed = datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    parsed = None
+        if parsed:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            entry["removed_at"] = parsed.isoformat()
+        logs.append(entry)
+    return logs
 
 # ============================================
 # ROOT ENDPOINTS

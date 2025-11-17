@@ -10,8 +10,11 @@ const StudentDashboard = () => {
   const [profile, setProfile] = useState({ name: user.name, email: user.email });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [appMessage, setAppMessage] = useState("");
+  const [appError, setAppError] = useState("");
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [removingAppId, setRemovingAppId] = useState(null);
 
   // Fetch user's authorized apps
   useEffect(() => {
@@ -49,6 +52,36 @@ const StudentDashboard = () => {
     }
     
     setLoading(false);
+  };
+
+  const handleRemoveApp = async (appId) => {
+    setAppMessage("");
+    setAppError("");
+    setRemovingAppId(appId);
+    try {
+      const response = await fetch(`${API_URL}/user/apps/${appId}/remove`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || "Failed to remove application");
+      }
+
+      const data = await response.json();
+      setAppMessage(data.message || "Application removed successfully");
+      fetchMyApps();
+      setTimeout(() => setAppMessage(""), 4000);
+    } catch (err) {
+      console.error("Remove app error:", err);
+      setAppError(err.message || "Unable to remove application");
+      setTimeout(() => setAppError(""), 4000);
+    } finally {
+      setRemovingAppId(null);
+    }
   };
 
   return (
@@ -160,7 +193,21 @@ const StudentDashboard = () => {
 
           {/* My Applications Card - FIXED */}
           <div className="bg-white rounded-2xl shadow-xl p-6">
-            <h2 className="text-2xl font-bold text-gray-800 mb-6">My Applications</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-gray-800">My Applications</h2>
+              <span className="text-sm text-gray-500">{apps.length} active</span>
+            </div>
+
+            {appMessage && (
+              <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-2 rounded-lg mb-4">
+                {appMessage}
+              </div>
+            )}
+            {appError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg mb-4">
+                {appError}
+              </div>
+            )}
             
             {apps.length === 0 ? (
               <div className="text-center py-8">
@@ -170,23 +217,37 @@ const StudentDashboard = () => {
             ) : (
               <div className="space-y-3">
                 {apps.map((app) => (
-                  <a
+                  <div
                     key={app.id}
-                    href={app.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block p-4 border border-gray-200 rounded-lg hover:shadow-md hover:border-teal-500 transition group"
+                    className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition bg-white"
                   >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-semibold text-gray-800 group-hover:text-teal-600 transition">
-                          {app.name}
-                        </p>
-                        <p className="text-sm text-gray-500">{app.url}</p>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-semibold text-gray-800">{app.name}</p>
+                          <p className="text-sm text-gray-500 break-all">{app.url}</p>
+                        </div>
+                        <a
+                          href={app.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-teal-600 hover:text-teal-800 text-sm"
+                        >
+                          Open
+                          <ExternalLink size={16} />
+                        </a>
                       </div>
-                      <ExternalLink className="text-gray-400 group-hover:text-teal-600 transition" size={20} />
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleRemoveApp(app.id)}
+                          disabled={removingAppId === app.id}
+                          className="px-3 py-1.5 text-sm rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
+                        >
+                          {removingAppId === app.id ? "Removing..." : "Remove Access"}
+                        </button>
+                      </div>
                     </div>
-                  </a>
+                  </div>
                 ))}
               </div>
             )}
@@ -208,10 +269,6 @@ const StudentDashboard = () => {
           </div>
         </div>
 
-        {/* Developer API Keys Section */}
-        <div className="mt-6">
-          <DeveloperKeys />
-        </div>
       </div>
     </div>
   );

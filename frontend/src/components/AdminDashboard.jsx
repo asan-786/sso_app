@@ -69,6 +69,8 @@ const AdminDashboard = () => {
   const [activeTab, setActiveTab] = useState("users");
   const [users, setUsers] = useState([]);
   const [apps, setApps] = useState([]);
+  const [removalLogs, setRemovalLogs] = useState([]);
+  const [loadingRemovals, setLoadingRemovals] = useState(false);
   
   // App form state
   const [newApp, setNewApp] = useState({ 
@@ -98,6 +100,7 @@ const AdminDashboard = () => {
   useEffect(() => {
     if (!token) return;
     loadApps();
+    loadRemovalLogs();
   }, [token]);
 
   const loadUsers = async () => {
@@ -127,6 +130,23 @@ const AdminDashboard = () => {
     }
   };
 
+  const loadRemovalLogs = async () => {
+    try {
+      setLoadingRemovals(true);
+      const res = await fetch(`${API_URL}/admin/removals`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setRemovalLogs(data || []);
+    } catch (err) {
+      console.error("Error loading removal logs:", err);
+      setRemovalLogs([]);
+    } finally {
+      setLoadingRemovals(false);
+    }
+  };
+
   // Add new application
   const handleAddApp = async () => {
     if (!newApp.name || !newApp.url) {
@@ -146,6 +166,7 @@ const AdminDashboard = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       
       await loadApps();
+      await loadRemovalLogs();
       setNewApp({ name: "", url: "", client_id: "", client_secret: "" });
       alert("App added successfully!");
     } catch (err) {
@@ -178,6 +199,7 @@ const AdminDashboard = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       
       await loadApps();
+      await loadRemovalLogs();
       setEditingApp(null);
       alert("App updated successfully!");
     } catch (err) {
@@ -663,6 +685,47 @@ const AdminDashboard = () => {
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Removal Activity */}
+                <div className="mt-8">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-lg font-bold text-gray-800">Recent Removals</h3>
+                    <button
+                      onClick={loadRemovalLogs}
+                      className="text-sm text-indigo-600 hover:text-indigo-800"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {loadingRemovals ? (
+                    <p className="text-sm text-gray-500">Loading...</p>
+                  ) : removalLogs.length === 0 ? (
+                    <p className="text-sm text-gray-500">No removal activity recorded yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {removalLogs.map((log) => (
+                        <div key={log.id} className="p-4 border border-gray-200 rounded-lg bg-gray-50">
+                          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-semibold text-gray-800">{log.app_name}</p>
+                              <p className="text-xs text-gray-500">{log.app_id}</p>
+                            </div>
+                            <div className="text-sm text-gray-700">
+                              <p>Removed by: {log.user_name || log.user_email}</p>
+                              <p className="text-xs text-gray-500">{log.user_email}</p>
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {new Date(log.removed_at).toLocaleString(undefined, {
+                                dateStyle: "medium",
+                                timeStyle: "short"
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

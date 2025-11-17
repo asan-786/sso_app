@@ -37,6 +37,7 @@
         let grantedScopes = []; // Holds the scopes granted by the user
         let resourceDetails = null; // Holds secure resource information returned by the backend
         let consentDenied = false; // Tracks whether the user denied the consent prompt
+        let hasSSOData = false; // Indicates whether the current profile comes from a live SSO session
 
         const defaultResourceDetails = {
             title: "Protected University Resource",
@@ -70,10 +71,10 @@
             return "Student";
         };
 
-        const normalizeProfile = (rawProfile = {}, fallbackEmail = "student@example.com") => {
+        const normalizeProfile = (rawProfile = {}, fallbackEmail = "student@example.com", fallbackName = "Student") => {
             const email = rawProfile.email || fallbackEmail;
             return {
-                name: deriveDisplayName(rawProfile.name, email),
+                name: deriveDisplayName(rawProfile.name || fallbackName, email),
                 email,
                 rollNo: rawProfile.rollNo || rawProfile.roll_no || "Not shared",
                 branch: rawProfile.branch || "Not shared",
@@ -81,17 +82,22 @@
             };
         };
 
-        const applyProfileState = ({ profile, scopes, resource, statusMessage }) => {
-            const normalized = normalizeProfile(profile, profile?.email);
+        const applyProfileState = ({ profile, scopes, resource, statusMessage, isSSO = false }) => {
+            const normalized = normalizeProfile(
+                profile,
+                profile?.email || "student@example.com",
+                profile?.name || "Student"
+            );
             currentProfile = normalized;
             currentUserName = normalized.name;
             grantedScopes = ensureArray(scopes).map(scope => formatScopeLabel(scope));
-            if (grantedScopes.length === 0) {
-                grantedScopes = ["Profile", "Email", "Student Academics"];
+            if (!isSSO) {
+                grantedScopes = [];
             }
             resourceDetails = resource || defaultResourceDetails;
             secureContent = statusMessage || "Secure data synced successfully.";
             consentDenied = false;
+            hasSSOData = !!isSSO;
         };
 
         // --- Helper Functions for Token Management ---
@@ -112,6 +118,7 @@
             grantedScopes = [];
             resourceDetails = null;
             consentDenied = false;
+            hasSSOData = false;
         }
 
         const renderGrantedScopes = () => {
@@ -162,12 +169,13 @@
                             <p class="text-lg font-semibold text-white">${profile.branch}${profile.semester && profile.semester !== "Not shared" ? ` · Sem ${profile.semester}` : ""}</p>
                         </div>
                     </div>
+                    ${hasSSOData ? `
                     <div class="bg-white/10 border border-white/20 rounded-lg p-4">
                         <p class="text-xs uppercase tracking-wide text-indigo-200">Granted Scopes</p>
                         <div class="flex flex-wrap gap-2 mt-2">
                             ${scopesMarkup}
                         </div>
-                    </div>
+                    </div>` : ""}
                     <div class="bg-white/10 border border-white/20 rounded-lg p-4">
                         <p class="text-xs uppercase tracking-wide text-indigo-200">Secure Resource</p>
                         <p class="text-sm text-indigo-50 font-semibold mt-1">${resource.title}</p>
@@ -306,12 +314,13 @@
                     branch: "Computer Science",
                     semester: "7"
                 },
-                scopes: ["profile", "email", "student_academics"],
+                scopes: [],
                 resource: {
                     title: "Sample University Records",
                     content: "This is placeholder content to demonstrate how secure data appears after a successful authorization."
                 },
-                statusMessage: "Displaying simulated data (not fetched from the live SSO service)."
+                statusMessage: "Displaying simulated data (not fetched from the live SSO service).",
+                isSSO: false
             });
             localStorage.removeItem('sso_jwt_token');
             window.location.hash = '#/dashboard';
@@ -378,9 +387,10 @@
                 
                 applyProfileState({
                     profile: data.user || { email: data.access_granted_to },
-                    scopes: data.granted_scopes,
+                    scopes: data.granted_scopes || data.scopes || [],
                     resource: data.resource_details,
-                    statusMessage: `Secure data synced successfully at ${new Date().toLocaleTimeString()}.`
+                    statusMessage: `Secure data synced successfully at ${new Date().toLocaleTimeString()}.`,
+                    isSSO: true
                 });
 
                 if (statusEl) {
