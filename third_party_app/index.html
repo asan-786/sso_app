@@ -327,6 +327,28 @@
             router();
         }
 
+        function showBlockedState(message) {
+            applyProfileState({
+                profile: {
+                    name: "Demo Access",
+                    email: "demo@student.edu",
+                    rollNo: "DEMO000",
+                    branch: "Restricted",
+                    semester: "N/A"
+                },
+                scopes: [],
+                resource: {
+                    title: "Demo Access Only",
+                    content: "Your access to this application has been restricted by the administrator."
+                },
+                statusMessage: message || "Access restricted by administrator. Displaying demo data.",
+                isSSO: false
+            });
+            consentDenied = true;
+            window.location.hash = '#/dashboard';
+            router();
+        }
+
 
         // 1. Initiate SSO Login Flow
         function handleSsoRedirect() {
@@ -370,7 +392,11 @@
                         }
                     });
                     
-                    data = await response.json();
+                    try {
+                        data = await response.json();
+                    } catch {
+                        data = {};
+                    }
 
                     if (response.ok) {
                         break; // Success
@@ -381,7 +407,8 @@
                         await new Promise(resolve => setTimeout(resolve, delay));
                     } else {
                         // Throw error if all retries fail
-                        throw new Error(data.message || 'Token verification failed after multiple retries.');
+                        const errMsg = data.detail || data.error || data.message || 'Token verification failed after multiple retries.';
+                        throw new Error(errMsg);
                     }
                 }
                 
@@ -414,6 +441,19 @@
                     userErrorMessage = `Cannot connect to the backend secure service (${SECURE_SERVICE_URL}). Ensure your Python server is running on port 8080.`;
                 }
                 
+                const lowerMsg = (error.message || "").toLowerCase();
+                if (lowerMsg.includes("application blocked")) {
+                    clearSSOToken("This application has been blocked by the administrator.");
+                    alert("This application has been blocked by the administrator. Please contact support.");
+                    window.location.hash = '#/login';
+                    return;
+                }
+                if (lowerMsg.includes("user access blocked")) {
+                    clearSSOToken();
+                    showBlockedState("Your access has been blocked for this application. Displaying demo data.");
+                    return;
+                }
+
                 secureContent = `Error: Access Denied! ${userErrorMessage}`;
                 clearSSOToken(secureContent);
                 window.location.hash = '#/login'; // Force login page on failure
@@ -446,6 +486,19 @@
                     clearSSOToken("You denied the data-sharing request. Reopen the SSO prompt to grant access when you're ready.");
                     consentDenied = true;
                     window.location.hash = '#/dashboard';
+                    return;
+                }
+
+                if (error === 'app_blocked') {
+                    clearSSOToken("This application has been blocked by the administrator.");
+                    alert("This application has been blocked by the administrator. Please contact support.");
+                    window.location.hash = '#/login';
+                    return;
+                }
+
+                if (error === 'user_blocked') {
+                    clearSSOToken();
+                    showBlockedState("Your account has been blocked for this application. Displaying demo data.");
                     return;
                 }
 

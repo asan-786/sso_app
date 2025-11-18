@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, Search, ChevronDown, X } from "lucide-react";
+import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, Search, ChevronDown, X, Key as KeyIcon, Copy, Lock, Unlock, Ban } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000/api";
 
@@ -75,9 +75,13 @@ const AdminDashboard = () => {
   // App form state
   const [newApp, setNewApp] = useState({ 
     name: "", 
-    url: ""
+    url: "",
+    client_id: "",
+    client_secret: "",
+    redirect_url: ""
   });
   const [editingApp, setEditingApp] = useState(null);
+  const [appKeyModal, setAppKeyModal] = useState({ visible: false, value: "", appName: "" });
   const [searchQueries, setSearchQueries] = useState({});
   const [sortOrders, setSortOrders] = useState({});
   
@@ -140,8 +144,8 @@ const AdminDashboard = () => {
 
   // Add new application
   const handleAddApp = async () => {
-    if (!newApp.name || !newApp.url) {
-      alert("Please fill required fields (Name and URL)");
+    if (!newApp.name || !newApp.url || !newApp.redirect_url) {
+      alert("Please fill required fields (Name, URL, Redirect URL)");
       return;
     }
     try {
@@ -158,7 +162,7 @@ const AdminDashboard = () => {
       
       await loadApps();
       await loadRemovalLogs();
-      setNewApp({ name: "", url: "" });
+      setNewApp({ name: "", url: "", client_id: "", client_secret: "", redirect_url: "" });
       alert("App added successfully!");
     } catch (err) {
       console.error("Error adding app:", err);
@@ -168,7 +172,7 @@ const AdminDashboard = () => {
 
   // Update application
   const handleUpdateApp = async () => {
-    if (!editingApp.name || !editingApp.url) {
+    if (!editingApp.name || !editingApp.url || !editingApp.redirect_url) {
       alert("Please fill required fields");
       return;
     }
@@ -183,7 +187,8 @@ const AdminDashboard = () => {
           name: editingApp.name,
           url: editingApp.url,
           client_id: editingApp.client_id,
-          client_secret: editingApp.client_secret
+          client_secret: editingApp.client_secret,
+          redirect_url: editingApp.redirect_url
         }),
       });
       
@@ -196,6 +201,44 @@ const AdminDashboard = () => {
     } catch (err) {
       console.error("Error updating app:", err);
       alert("Failed to update application.");
+    }
+  };
+
+  const handleToggleAppBlock = async (appId, nextState) => {
+    try {
+      const res = await fetch(`${API_URL}/applications/${appId}/block`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ blocked: nextState })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadApps();
+      alert(`Application ${nextState ? "blocked" : "unblocked"}`);
+    } catch (err) {
+      console.error("Error toggling app block:", err);
+      alert("Failed to update application block status");
+    }
+  };
+
+  const handleToggleUserBlock = async (appId, email, nextState) => {
+    try {
+      const res = await fetch(`${API_URL}/applications/${appId}/users/block`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ email, blocked: nextState })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadApps();
+      alert(`User ${email} ${nextState ? "blocked" : "unblocked"} for this app`);
+    } catch (err) {
+      console.error("Error toggling user block:", err);
+      alert("Failed to update user block status");
     }
   };
 
@@ -237,15 +280,17 @@ const AdminDashboard = () => {
     }
   };
 
-  const getFilteredUsers = (appId, emails) => {
-    if (!emails || emails.length === 0) return [];
+  const getFilteredUsers = (appId, usersList) => {
+    if (!usersList || usersList.length === 0) return [];
     const query = (searchQueries[appId] || "").toLowerCase();
     const order = sortOrders[appId] || "asc";
-    let filtered = emails.filter((email) =>
-      email.toLowerCase().includes(query)
+    let filtered = usersList.filter((user) =>
+      user.email.toLowerCase().includes(query)
     );
     filtered.sort((a, b) =>
-      order === "asc" ? a.localeCompare(b) : b.localeCompare(a)
+      order === "asc"
+        ? a.email.localeCompare(b.email)
+        : b.email.localeCompare(a.email)
     );
     return filtered;
   };
@@ -263,6 +308,37 @@ const AdminDashboard = () => {
       ...prev,
       [appId]: prev[appId] === "asc" ? "desc" : "asc",
     }));
+  };
+
+  const copyText = (text) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    alert("Copied to clipboard!");
+  };
+
+  const handleGenerateAppKey = async (app) => {
+    try {
+      const res = await fetch(`${API_URL}/applications/${app.id}/api-keys`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ name: `${app.name} API Key` })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to create API key");
+
+      setAppKeyModal({
+        visible: true,
+        value: data.key_value,
+        appName: app.name
+      });
+    } catch (err) {
+      console.error("Error generating application key:", err);
+      alert(err.message || "Failed to generate API key");
+    }
   };
 
   const stats = [
@@ -451,6 +527,16 @@ const AdminDashboard = () => {
                       }
                       className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
                     />
+                    <input
+                      type="url"
+                      placeholder="Redirect URL * (e.g., https://app.example.com/callback)"
+                      value={editingApp ? editingApp.redirect_url : newApp.redirect_url}
+                      onChange={(e) => editingApp
+                        ? setEditingApp({...editingApp, redirect_url: e.target.value})
+                        : setNewApp({...newApp, redirect_url: e.target.value})
+                      }
+                      className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 md:col-span-2"
+                    />
                   </div>
                   <div className="flex gap-2">
                     <button 
@@ -473,8 +559,9 @@ const AdminDashboard = () => {
                 {/* Applications List */}
                 <div className="space-y-4">
                   {apps.map((app) => {
-                    const hasUsers = app.authorized_emails && app.authorized_emails.length > 0;
-                    const filteredUsers = getFilteredUsers(app.id, app.authorized_emails);
+                    const authorizedUsers = app.authorized_users || (app.authorized_emails || []).map(email => ({ email, blocked: false }));
+                    const hasUsers = authorizedUsers.length > 0;
+                    const filteredUsers = getFilteredUsers(app.id, authorizedUsers);
                     
                     return (
                       <div key={app.id} className="border border-gray-200 rounded-lg p-4">
@@ -482,9 +569,15 @@ const AdminDashboard = () => {
                           <div className="flex-1">
                             <h3 className="font-semibold text-gray-800 text-lg">{app.name}</h3>
                             <p className="text-sm text-gray-500">{app.url}</p>
+                          {app.redirect_url && (
+                            <p className="text-xs text-gray-400 mt-1">Redirect URL: {app.redirect_url}</p>
+                          )}
                             {app.client_id && (
                               <p className="text-xs text-gray-400 mt-1">Client ID: {app.client_id}</p>
                             )}
+                          {app.blocked && (
+                            <p className="text-xs font-semibold text-red-600 mt-1">Application is blocked</p>
+                          )}
                           </div>
                           <div className="flex gap-2">
                             <button
@@ -494,6 +587,20 @@ const AdminDashboard = () => {
                             >
                               <Edit2 size={18} />
                             </button>
+                            <button
+                              onClick={() => handleToggleAppBlock(app.id, !app.blocked)}
+                              className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg"
+                              title={app.blocked ? "Unblock application" : "Block application"}
+                            >
+                              {app.blocked ? <Unlock size={18} /> : <Lock size={18} />}
+                            </button>
+                          <button
+                            onClick={() => handleGenerateAppKey(app)}
+                            className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                            title="Generate API Key"
+                          >
+                            <KeyIcon size={18} />
+                          </button>
                             <button
                               onClick={() => handleDeleteApp(app.id)}
                               className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
@@ -509,7 +616,7 @@ const AdminDashboard = () => {
                           <div className="mt-3 pt-3 border-t border-gray-200">
                             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-3">
                               <p className="text-sm font-medium text-gray-700">
-                                Authorized Users ({filteredUsers.length}/{app.authorized_emails.length})
+                                Authorized Users ({filteredUsers.length}/{authorizedUsers.length})
                               </p>
                               <div className="flex items-center gap-2">
                                 <div className="relative">
@@ -544,12 +651,21 @@ const AdminDashboard = () => {
                             </div>
                             {filteredUsers.length > 0 ? (
                               <div className="flex flex-wrap gap-2">
-                                {filteredUsers.map((email) => (
+                                {filteredUsers.map((user) => (
                                   <span
-                                    key={email}
-                                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-100 text-green-700 rounded-full text-sm"
+                                    key={user.email}
+                                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm ${
+                                      user.blocked ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
+                                    }`}
                                   >
-                                    {email}
+                                    {user.email}
+                                    <button
+                                      onClick={() => handleToggleUserBlock(app.id, user.email, !user.blocked)}
+                                      className="hover:text-gray-800"
+                                      title={user.blocked ? "Unblock user" : "Block user"}
+                                    >
+                                      {user.blocked ? <Unlock size={14} /> : <Lock size={14} />}
+                                    </button>
                                   </span>
                                 ))}
                               </div>

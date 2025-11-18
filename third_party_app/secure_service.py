@@ -12,8 +12,8 @@ from SSO_PY_SDK import SSOClient, SSOServiceError  # noqa: E402
 app = Flask(__name__)
 CORS(app) # Allow CORS for frontend running on a different port/origin
 
-# !!! REPLACE WITH YOUR ACTUAL API KEY FROM SSO DASHBOARD !!!
-APP_API_KEY = "sso_live_Lw_MaaLm92aRjGLa-CunEZWMovqo-_QpuZdMXiryaMk" 
+# API Key dedicated to CampusConnect Demo (auto-seeded in SSO)
+APP_API_KEY = "sso_live_cc_demo_primary_4d2d59"
 
 try:
     sso_client = SSOClient(api_key=APP_API_KEY)

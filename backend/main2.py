@@ -7,12 +7,13 @@ from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from fastapi.responses import RedirectResponse # ADDED: For SSO redirect
+from fastapi.responses import RedirectResponse  # ADDED: For SSO redirect
 import sqlite3
 import uuid
 import secrets
 import os
 from html import escape
+from urllib.parse import urlparse
 
 # ============================================
 # CONFIGURATION
@@ -41,6 +42,7 @@ app.add_middleware(
 # ============================================
 def init_db():
     conn = sqlite3.connect("sso_database.db")
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -65,19 +67,36 @@ def init_db():
             url TEXT NOT NULL,
             client_id TEXT,
             client_secret TEXT,
+            redirect_url TEXT,
+            blocked BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Add redirect_url column if the table existed previously without it
+    try:
+        cursor.execute("ALTER TABLE applications ADD COLUMN redirect_url TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE applications ADD COLUMN blocked BOOLEAN DEFAULT FALSE")
+    except sqlite3.OperationalError:
+        pass
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_app_access (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_email TEXT NOT NULL,
             app_id TEXT NOT NULL,
+            blocked BOOLEAN DEFAULT FALSE,
             granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (app_id) REFERENCES applications(id)
         )
     """)
+    try:
+        cursor.execute("ALTER TABLE user_app_access ADD COLUMN blocked BOOLEAN DEFAULT FALSE")
+    except sqlite3.OperationalError:
+        pass
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -100,9 +119,16 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_used TIMESTAMP,
             revoked BOOLEAN DEFAULT FALSE,
+            app_id TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
+
+    # Ensure legacy databases have app_id column
+    try:
+        cursor.execute("ALTER TABLE api_keys ADD COLUMN app_id TEXT")
+    except sqlite3.OperationalError:
+        pass
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS session_logs (
@@ -159,12 +185,16 @@ def init_db():
     
     admin_email = "admin@example.com"
     cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
-    if not cursor.fetchone():
+    admin_row = cursor.fetchone()
+    if not admin_row:
         admin_password = pwd_context.hash("admin123")
         cursor.execute("""
             INSERT INTO users (name, email, password_hash, role, roll_no, branch, semester)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, ("Admin User", admin_email, admin_password, "admin", "ADMIN001", "CSE", "N/A"))
+        cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
+        admin_row = cursor.fetchone()
+    admin_id = admin_row[0] if admin_row else None
     
     student_email = "student@example.com"
     cursor.execute("SELECT id FROM users WHERE email = ?", (student_email,))
@@ -177,12 +207,66 @@ def init_db():
 
     demo_client_id = "campusconnect-client"
     cursor.execute("SELECT id FROM applications WHERE client_id = ?", (demo_client_id,))
-    if not cursor.fetchone():
+    existing_demo_app = cursor.fetchone()
+    if not existing_demo_app:
         demo_app_id = str(uuid.uuid4())
         cursor.execute("""
-            INSERT INTO applications (id, name, url, client_id, client_secret)
-            VALUES (?, ?, ?, ?, ?)
-        """, (demo_app_id, "CampusConnect Demo", "http://127.0.0.1:8080", demo_client_id, ""))
+            INSERT INTO applications (id, name, url, client_id, client_secret, redirect_url)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            demo_app_id,
+            "CampusConnect Demo",
+            "http://127.0.0.1:8080",
+            demo_client_id,
+            "",
+            "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
+        ))
+    else:
+        cursor.execute("""
+            UPDATE applications
+            SET redirect_url = ?
+            WHERE client_id = ?
+        """, ("http://127.0.0.1:5500/sso_app/third_party_app/index.html", demo_client_id))
+
+    # Seed a second demo application for the second third-party app
+    demo2_client_id = "campusconnect-client-2"
+    cursor.execute("SELECT id FROM applications WHERE client_id = ?", (demo2_client_id,))
+    existing_demo2_app = cursor.fetchone()
+    if not existing_demo2_app:
+        demo2_app_id = str(uuid.uuid4())
+        cursor.execute("""
+            INSERT INTO applications (id, name, url, client_id, client_secret, redirect_url)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            demo2_app_id,
+            "CampusConnect Plus Demo",
+            "http://127.0.0.1:8081",
+            demo2_client_id,
+            "",
+            "http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html",
+        ))
+    else:
+        cursor.execute("""
+            UPDATE applications
+            SET redirect_url = ?
+            WHERE client_id = ?
+        """, ("http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html", demo2_client_id))
+
+    # Seed demo API keys for both applications (owned by admin for convenience)
+    if admin_id:
+        demo_api_keys = [
+            ("CampusConnect Demo Key", "sso_live_cc_demo_primary_4d2d59"),
+            ("CampusConnect Plus Demo Key", "sso_live_cc_plus_primary_a13b78"),
+        ]
+        for name, key_value in demo_api_keys:
+            cursor.execute("""
+                SELECT id FROM api_keys WHERE key_value = ? AND user_id = ?
+            """, (key_value, admin_id))
+            if not cursor.fetchone():
+                cursor.execute("""
+                    INSERT INTO api_keys (key_value, user_id, name)
+                    VALUES (?, ?, ?)
+                """, (key_value, admin_id, name))
     
     conn.commit()
     conn.close()
@@ -233,6 +317,7 @@ class ApplicationCreate(BaseModel):
     url: str
     client_id: Optional[str] = ""
     client_secret: Optional[str] = ""
+    redirect_url: Optional[str] = ""
 
 class Application(BaseModel):
     id: str
@@ -240,11 +325,23 @@ class Application(BaseModel):
     url: str
     client_id: Optional[str] = ""
     client_secret: Optional[str] = ""
+    redirect_url: Optional[str] = ""
+    blocked: bool = False
     authorized_emails: List[str] = Field(default_factory=list)
+
+class ApplicationBlockRequest(BaseModel):
+    blocked: bool
+
+class ApplicationUserBlockRequest(BaseModel):
+    email: EmailStr
+    blocked: bool
 
 class MapRequest(BaseModel):
     email: str
     app_id: str
+
+class ApplicationAPIKeyCreate(BaseModel):
+    name: Optional[str] = None
 
 class User(BaseModel):
     id: int
@@ -289,15 +386,71 @@ def get_application_by_client_id(client_id: str) -> Optional[sqlite3.Row]:
     cursor.execute("SELECT * FROM applications WHERE client_id = ?", (client_id,))
     app = cursor.fetchone()
     conn.close()
-    return app
+    return dict(app) if app else None
 
+def normalize_url_for_validation(url: str) -> Optional[tuple]:
+    """Return (scheme, netloc, path) for comparison. Path has no trailing slash."""
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = parsed.path or ""
+    if path.endswith("/") and path != "/":
+        path = path.rstrip("/")
+    return parsed.scheme, parsed.netloc, path
+
+def is_redirect_allowed(redirect_uri: str, allowed_url: Optional[str]) -> bool:
+    if not allowed_url:
+        return True
+    allowed_norm = normalize_url_for_validation(allowed_url)
+    incoming_norm = normalize_url_for_validation(redirect_uri)
+    if not allowed_norm or not incoming_norm:
+        return False
+    allowed_scheme, allowed_netloc, allowed_path = allowed_norm
+    inc_scheme, inc_netloc, inc_path = incoming_norm
+    if allowed_scheme != inc_scheme or allowed_netloc != inc_netloc:
+        return False
+    if allowed_path and not inc_path.startswith(allowed_path):
+        return False
+    return True
 def get_application_by_id(app_id: str) -> Optional[sqlite3.Row]:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM applications WHERE id = ?", (app_id,))
     app = cursor.fetchone()
     conn.close()
-    return app
+    return dict(app) if app else None
+
+def ensure_user_app_access(user_email: str, app_id: str) -> None:
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id FROM user_app_access
+        WHERE user_email = ? AND app_id = ?
+    """, (user_email, app_id))
+    if not cursor.fetchone():
+        cursor.execute("""
+            INSERT INTO user_app_access (user_email, app_id, blocked)
+            VALUES (?, ?, FALSE)
+        """, (user_email, app_id))
+        conn.commit()
+    conn.close()
+
+def is_user_blocked_for_app(user_email: str, app_id: str) -> bool:
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT blocked FROM user_app_access
+        WHERE user_email = ? AND app_id = ?
+    """, (user_email, app_id))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return False
+    return bool(row["blocked"])
 
 def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
     conn = get_db()
@@ -355,21 +508,13 @@ def save_user_consent(user_id: int, app_id: str, scopes: List[str]) -> None:
             VALUES (?, ?, ?)
         """, (user_id, app_id, " ".join(normalized)))
 
-    # Ensure the application appears in the student's assigned applications list
+    conn.commit()
     cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
     user_row = cursor.fetchone()
-    if user_row and user_row["email"]:
-        cursor.execute("""
-            INSERT INTO user_app_access (user_email, app_id)
-            SELECT ?, ?
-            WHERE NOT EXISTS (
-                SELECT 1 FROM user_app_access
-                WHERE user_email = ? AND app_id = ?
-            )
-        """, (user_row["email"], app_id, user_row["email"], app_id))
-
-    conn.commit()
     conn.close()
+
+    if user_row and user_row["email"]:
+        ensure_user_app_access(user_row["email"], app_id)
 
 SCOPE_FIELD_MAP = {
     "profile": ["name"],
@@ -720,7 +865,24 @@ def sso_login_redirect(
     if not application:
         raise HTTPException(status_code=400, detail="Unknown client_id")
 
+    # Enforce that the redirect_uri matches the registered application origin
+    allowed_redirect_base = application["redirect_url"] or application["url"]
+    if not is_redirect_allowed(redirect_uri, allowed_redirect_base):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid redirect_uri for this client application",
+        )
+
+    if application.get("blocked"):
+        blocked_url = f"{redirect_uri}?error=app_blocked"
+        return RedirectResponse(url=blocked_url, status_code=status.HTTP_302_FOUND)
+
     requested_scopes = normalize_scopes(scope) or DEFAULT_SSO_SCOPES
+
+    ensure_user_app_access(user["email"], application["id"])
+    if is_user_blocked_for_app(user["email"], application["id"]):
+        blocked_url = f"{redirect_uri}?error=user_blocked"
+        return RedirectResponse(url=blocked_url, status_code=status.HTTP_302_FOUND)
 
     if not user_has_consent(user["id"], application["id"], requested_scopes):
         consent_token = create_pending_consent(
@@ -768,6 +930,15 @@ def consent_decision(
     if not user or not application:
         delete_pending_consent(consent_token)
         return RedirectResponse(url=f"{redirect_uri}?error=invalid_consent", status_code=status.HTTP_302_FOUND)
+
+    if application.get("blocked"):
+        delete_pending_consent(consent_token)
+        return RedirectResponse(url=f"{redirect_uri}?error=app_blocked", status_code=status.HTTP_302_FOUND)
+
+    ensure_user_app_access(user["email"], application["id"])
+    if is_user_blocked_for_app(user["email"], application["id"]):
+        delete_pending_consent(consent_token)
+        return RedirectResponse(url=f"{redirect_uri}?error=user_blocked", status_code=status.HTTP_302_FOUND)
 
     expires_at = datetime.fromisoformat(pending["expires_at"])
     if datetime.utcnow() > expires_at:
@@ -1006,6 +1177,15 @@ def sdk_verify_token(token: str, current_app: dict = Depends(verify_api_key)):
         if not user_has_consent(user["id"], app_id, scopes):
             return {"valid": False, "error": "Required consent not granted"}
 
+        application = get_application_by_id(app_id)
+        if not application:
+            return {"valid": False, "error": "Application not found"}
+        if application.get("blocked"):
+            return {"valid": False, "error": "Application blocked by admin"}
+
+        if is_user_blocked_for_app(user["email"], app_id):
+            return {"valid": False, "error": "User access blocked by admin"}
+
         filtered_user = filter_user_data_by_scopes(user, scopes)
         
         return {
@@ -1039,6 +1219,15 @@ def sdk_user_profile(token: str, current_app: dict = Depends(verify_api_key)):
 
     if not user_has_consent(user["id"], app_id, scopes):
         raise HTTPException(status_code=403, detail="User has not granted required permissions")
+
+    application = get_application_by_id(app_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if application.get("blocked"):
+        raise HTTPException(status_code=403, detail="Application blocked by admin")
+
+    if is_user_blocked_for_app(user["email"], app_id):
+        raise HTTPException(status_code=403, detail="User access blocked by admin")
 
     filtered_user = filter_user_data_by_scopes(user, scopes)
     return {
@@ -1092,9 +1281,16 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO applications (id, name, url, client_id, client_secret)
-        VALUES (?, ?, ?, ?, ?)
-    """, (app_id, app_data.name, app_data.url, app_data.client_id, app_data.client_secret))
+        INSERT INTO applications (id, name, url, client_id, client_secret, redirect_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        app_id,
+        app_data.name,
+        app_data.url,
+        app_data.client_id,
+        app_data.client_secret,
+        app_data.redirect_url or "",
+    ))
     conn.commit()
     conn.close()
     
@@ -1102,6 +1298,8 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
         "id": app_id,
         "name": app_data.name,
         "url": app_data.url,
+        "client_id": app_data.client_id,
+        "redirect_url": app_data.redirect_url,
         "message": "Application created successfully"
     }
 
@@ -1114,11 +1312,17 @@ def get_applications(current_user: dict = Depends(get_current_user)):
     apps = [dict(row) for row in cursor.fetchall()]
     
     for app in apps:
+        app["blocked"] = bool(app.get("blocked", False))
         cursor.execute("""
-            SELECT user_email FROM user_app_access 
+            SELECT user_email, blocked FROM user_app_access 
             WHERE app_id = ?
         """, (app["id"],))
-        app["authorized_emails"] = [row["user_email"] for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        app["authorized_users"] = [{
+            "email": row["user_email"],
+            "blocked": bool(row["blocked"])
+        } for row in rows]
+        app["authorized_emails"] = [row["user_email"] for row in rows]
     
     conn.close()
     
@@ -1131,9 +1335,16 @@ def update_application(app_id: str, app_data: ApplicationCreate, current_user: d
     
     cursor.execute("""
         UPDATE applications 
-        SET name = ?, url = ?, client_id = ?, client_secret = ?
+        SET name = ?, url = ?, client_id = ?, client_secret = ?, redirect_url = ?
         WHERE id = ?
-    """, (app_data.name, app_data.url, app_data.client_id, app_data.client_secret, app_id))
+    """, (
+        app_data.name,
+        app_data.url,
+        app_data.client_id,
+        app_data.client_secret,
+        app_data.redirect_url or "",
+        app_id,
+    ))
     
     if cursor.rowcount == 0:
         conn.close()
@@ -1143,6 +1354,61 @@ def update_application(app_id: str, app_data: ApplicationCreate, current_user: d
     conn.close()
     
     return {"message": "Application updated successfully"}
+
+
+@app.post("/api/applications/{app_id}/block")
+def set_application_block(app_id: str, payload: ApplicationBlockRequest, current_user: dict = Depends(require_admin)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE applications SET blocked = ? WHERE id = ?", (payload.blocked, app_id))
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+    conn.commit()
+    conn.close()
+    state = "blocked" if payload.blocked else "unblocked"
+    return {"message": f"Application {state}"}
+
+
+@app.post("/api/applications/{app_id}/users/block")
+def set_application_user_block(
+    app_id: str,
+    payload: ApplicationUserBlockRequest,
+    current_user: dict = Depends(require_admin)
+):
+    application = get_application_by_id(app_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE email = ?", (payload.email,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    cursor.execute("""
+        SELECT id FROM user_app_access
+        WHERE user_email = ? AND app_id = ?
+    """, (payload.email, app_id))
+    existing = cursor.fetchone()
+    if existing:
+        cursor.execute("""
+            UPDATE user_app_access
+            SET blocked = ?
+            WHERE id = ?
+        """, (payload.blocked, existing["id"]))
+    else:
+        cursor.execute("""
+            INSERT INTO user_app_access (user_email, app_id, blocked)
+            VALUES (?, ?, ?)
+        """, (payload.email, app_id, payload.blocked))
+    conn.commit()
+    conn.close()
+    state = "blocked" if payload.blocked else "unblocked"
+    return {"message": f"User {payload.email} {state} for this app"}
 
 @app.delete("/api/applications/{app_id}")
 def delete_application(app_id: str, current_user: dict = Depends(require_admin)):
@@ -1160,6 +1426,68 @@ def delete_application(app_id: str, current_user: dict = Depends(require_admin))
     conn.close()
     
     return {"message": "Application deleted successfully"}
+
+
+@app.post("/api/applications/{app_id}/api-keys")
+def generate_application_api_key(app_id: str, key_data: ApplicationAPIKeyCreate, current_user: dict = Depends(require_admin)):
+    app = get_application_by_id(app_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    key_value = f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+    key_name = key_data.name or f"{app['name']} Integration Key"
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO api_keys (key_value, user_id, name, app_id)
+        VALUES (?, ?, ?, ?)
+    """, (key_value, current_user["id"], key_name, app_id))
+    conn.commit()
+    key_id = cursor.lastrowid
+    conn.close()
+
+    return {
+        "id": key_id,
+        "key_value": key_value,
+        "name": key_name,
+        "app_id": app_id
+    }
+
+
+@app.get("/api/applications/{app_id}/api-keys")
+def list_application_api_keys(app_id: str, current_user: dict = Depends(require_admin)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, name, created_at, last_used, revoked
+        FROM api_keys
+        WHERE app_id = ?
+        ORDER BY created_at DESC
+    """, (app_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@app.delete("/api/applications/{app_id}/api-keys/{key_id}")
+def revoke_application_api_key(app_id: str, key_id: int, current_user: dict = Depends(require_admin)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE api_keys
+        SET revoked = TRUE
+        WHERE id = ? AND app_id = ?
+    """, (key_id, app_id))
+
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="API key not found for this application")
+
+    conn.commit()
+    conn.close()
+
+    return {"message": "Application API key revoked"}
 
 # ============================================
 # USER-APP MAPPING
