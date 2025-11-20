@@ -14,6 +14,8 @@ import secrets
 import os
 from html import escape
 from urllib.parse import urlparse
+import json
+import re
 
 # ============================================
 # CONFIGURATION
@@ -36,6 +38,62 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+REDIRECT_SPLIT_PATTERN = re.compile(r"[,\s]+")
+
+
+def parse_redirect_entries(raw: Optional[str]) -> List[str]:
+    """Return list of distinct redirect URLs from stored field."""
+    if raw is None:
+        return []
+
+    entries: List[str] = []
+
+    if isinstance(raw, list):
+        for item in raw:
+            item_str = str(item).strip()
+            if item_str:
+                entries.append(item_str)
+        return entries
+
+    raw_str = str(raw).strip()
+    if not raw_str:
+        return []
+
+    # Attempt JSON decoding first to support stored lists
+    try:
+        parsed = json.loads(raw_str)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        if isinstance(parsed, str):
+            raw_str = parsed.strip()
+    except json.JSONDecodeError:
+        pass
+
+    normalized = raw_str.replace("\r", "\n")
+    for part in REDIRECT_SPLIT_PATTERN.split(normalized):
+        value = part.strip()
+        if value:
+            entries.append(value)
+
+    if not entries:
+        entries.append(raw_str)
+    return entries
+
+
+def serialize_redirect_entries(entries: List[str]) -> str:
+    """Normalize redirect entries into newline-delimited string."""
+    seen: List[str] = []
+    for entry in entries:
+        entry_str = str(entry).strip()
+        if entry_str and entry_str not in seen:
+            seen.append(entry_str)
+    return "\n".join(seen)
+
+
+def normalize_redirect_field(raw: Optional[str]) -> str:
+    return serialize_redirect_entries(parse_redirect_entries(raw))
+
 
 # ============================================
 # DATABASE SETUP
@@ -219,14 +277,20 @@ def init_db():
             "http://127.0.0.1:8080",
             demo_client_id,
             "",
-            "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
+            serialize_redirect_entries([
+                "http://127.0.0.1:5500/third_party_app/index.html",
+                "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
+            ]),
         ))
     else:
         cursor.execute("""
             UPDATE applications
             SET redirect_url = ?
             WHERE client_id = ?
-        """, ("http://127.0.0.1:5500/sso_app/third_party_app/index.html", demo_client_id))
+        """, (serialize_redirect_entries([
+            "http://127.0.0.1:5500/third_party_app/index.html",
+            "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
+        ]), demo_client_id))
 
     # Seed a second demo application for the second third-party app
     demo2_client_id = "campusconnect-client-2"
@@ -243,14 +307,20 @@ def init_db():
             "http://127.0.0.1:8081",
             demo2_client_id,
             "",
-            "http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html",
+            serialize_redirect_entries([
+                "http://127.0.0.1:5500/third_party_app_2/index2.html",
+                "http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html",
+            ]),
         ))
     else:
         cursor.execute("""
             UPDATE applications
             SET redirect_url = ?
             WHERE client_id = ?
-        """, ("http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html", demo2_client_id))
+        """, (serialize_redirect_entries([
+            "http://127.0.0.1:5500/third_party_app_2/index2.html",
+            "http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html",
+        ]), demo2_client_id))
 
     # Seed demo API keys for both applications (owned by admin for convenience)
     if admin_id:
@@ -319,6 +389,12 @@ class ApplicationCreate(BaseModel):
     client_secret: Optional[str] = ""
     redirect_url: Optional[str] = ""
 
+
+class ApplicationAuthorizedUser(BaseModel):
+    email: EmailStr
+    blocked: bool = False
+
+
 class Application(BaseModel):
     id: str
     name: str
@@ -328,6 +404,7 @@ class Application(BaseModel):
     redirect_url: Optional[str] = ""
     blocked: bool = False
     authorized_emails: List[str] = Field(default_factory=list)
+    authorized_users: List[ApplicationAuthorizedUser] = Field(default_factory=list)
 
 class ApplicationBlockRequest(BaseModel):
     blocked: bool
@@ -414,6 +491,15 @@ def is_redirect_allowed(redirect_uri: str, allowed_url: Optional[str]) -> bool:
     if allowed_path and not inc_path.startswith(allowed_path):
         return False
     return True
+
+
+def get_allowed_redirects_for_app(application: dict) -> List[str]:
+    redirects = parse_redirect_entries(application.get("redirect_url"))
+    if not redirects and application.get("url"):
+        redirects.append(application["url"])
+    return redirects
+
+
 def get_application_by_id(app_id: str) -> Optional[sqlite3.Row]:
     conn = get_db()
     cursor = conn.cursor()
@@ -865,9 +951,10 @@ def sso_login_redirect(
     if not application:
         raise HTTPException(status_code=400, detail="Unknown client_id")
 
-    # Enforce that the redirect_uri matches the registered application origin
-    allowed_redirect_base = application["redirect_url"] or application["url"]
-    if not is_redirect_allowed(redirect_uri, allowed_redirect_base):
+    # Enforce that the redirect_uri matches one of the registered application origins
+    allowed_redirects = get_allowed_redirects_for_app(application)
+    redirect_ok = any(is_redirect_allowed(redirect_uri, allowed) for allowed in allowed_redirects)
+    if not redirect_ok:
         raise HTTPException(
             status_code=400,
             detail="Invalid redirect_uri for this client application",
@@ -1277,6 +1364,7 @@ def update_user_role(user_id: int, role: str, current_user: dict = Depends(requi
 @app.post("/api/applications")
 def create_application(app_data: ApplicationCreate, current_user: dict = Depends(require_admin)):
     app_id = str(uuid.uuid4())
+    normalized_redirect = normalize_redirect_field(app_data.redirect_url)
     
     conn = get_db()
     cursor = conn.cursor()
@@ -1289,7 +1377,7 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
         app_data.url,
         app_data.client_id,
         app_data.client_secret,
-        app_data.redirect_url or "",
+        normalized_redirect,
     ))
     conn.commit()
     conn.close()
@@ -1299,7 +1387,7 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
         "name": app_data.name,
         "url": app_data.url,
         "client_id": app_data.client_id,
-        "redirect_url": app_data.redirect_url,
+        "redirect_url": normalized_redirect,
         "message": "Application created successfully"
     }
 
@@ -1313,6 +1401,7 @@ def get_applications(current_user: dict = Depends(get_current_user)):
     
     for app in apps:
         app["blocked"] = bool(app.get("blocked", False))
+        app["redirect_url"] = serialize_redirect_entries(parse_redirect_entries(app.get("redirect_url")))
         cursor.execute("""
             SELECT user_email, blocked FROM user_app_access 
             WHERE app_id = ?
@@ -1332,6 +1421,7 @@ def get_applications(current_user: dict = Depends(get_current_user)):
 def update_application(app_id: str, app_data: ApplicationCreate, current_user: dict = Depends(require_admin)):
     conn = get_db()
     cursor = conn.cursor()
+    normalized_redirect = normalize_redirect_field(app_data.redirect_url)
     
     cursor.execute("""
         UPDATE applications 
@@ -1342,7 +1432,7 @@ def update_application(app_id: str, app_data: ApplicationCreate, current_user: d
         app_data.url,
         app_data.client_id,
         app_data.client_secret,
-        app_data.redirect_url or "",
+        normalized_redirect,
         app_id,
     ))
     
@@ -1761,7 +1851,7 @@ def sso_login_page():
 
                 const form = document.createElement('form');
                 form.method = 'POST';
-                form.action = 'http://127.0.0.1:8000/login';
+                form.action = '/login';
 
                 for (let [key, value] of formData.entries()) {
                     const input = document.createElement('input');

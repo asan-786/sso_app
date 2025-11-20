@@ -84,6 +84,11 @@ const AdminDashboard = () => {
   const [appKeyModal, setAppKeyModal] = useState({ visible: false, value: "", appName: "" });
   const [searchQueries, setSearchQueries] = useState({});
   const [sortOrders, setSortOrders] = useState({});
+  const parseRedirectField = (value = "") =>
+    value
+      .split(/[\n,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
   
   // Load users from backend
   useEffect(() => {
@@ -527,16 +532,21 @@ const AdminDashboard = () => {
                       }
                       className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
                     />
-                    <input
-                      type="url"
-                      placeholder="Redirect URL * (e.g., https://app.example.com/callback)"
-                      value={editingApp ? editingApp.redirect_url : newApp.redirect_url}
-                      onChange={(e) => editingApp
-                        ? setEditingApp({...editingApp, redirect_url: e.target.value})
-                        : setNewApp({...newApp, redirect_url: e.target.value})
-                      }
-                      className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 md:col-span-2"
-                    />
+                    <div className="md:col-span-2">
+                      <textarea
+                        rows={3}
+                        placeholder="Redirect URLs * (one per line, e.g., https://app.example.com/callback)"
+                        value={editingApp ? editingApp.redirect_url : newApp.redirect_url}
+                        onChange={(e) => editingApp
+                          ? setEditingApp({ ...editingApp, redirect_url: e.target.value })
+                          : setNewApp({ ...newApp, redirect_url: e.target.value })
+                        }
+                        className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Supports multiple redirect URIs — add each one on a new line (similar to Google OAuth).
+                      </p>
+                    </div>
                   </div>
                   <div className="flex gap-2">
                     <button 
@@ -570,7 +580,16 @@ const AdminDashboard = () => {
                             <h3 className="font-semibold text-gray-800 text-lg">{app.name}</h3>
                             <p className="text-sm text-gray-500">{app.url}</p>
                           {app.redirect_url && (
-                            <p className="text-xs text-gray-400 mt-1">Redirect URL: {app.redirect_url}</p>
+                            <div className="text-xs text-gray-500 mt-2 space-y-1">
+                              <p className="font-semibold text-gray-600">Redirect URLs</p>
+                              <ul className="list-disc list-inside space-y-0.5">
+                                {parseRedirectField(app.redirect_url).map((uri) => (
+                                  <li key={`${app.id}-${uri}`} className="font-mono break-all">
+                                    {uri}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
                           )}
                             {app.client_id && (
                               <p className="text-xs text-gray-400 mt-1">Client ID: {app.client_id}</p>
