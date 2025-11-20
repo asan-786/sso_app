@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -13,7 +13,7 @@ import uuid
 import secrets
 import os
 from html import escape
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 import json
 import re
 
@@ -28,6 +28,7 @@ API_KEY_PREFIX = "sso_live_"
 
 app = FastAPI(title="SSO Portal - Enhanced Backend")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+client_secret_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
 # IMPORTANT: Ensure your frontend URL (http://127.0.0.1:5500) is allowed here
@@ -40,6 +41,37 @@ app.add_middleware(
 )
 
 REDIRECT_SPLIT_PATTERN = re.compile(r"[,\s]+")
+CLIENT_SECRET_BYTES = 32
+AUTH_CODE_EXPIRY_MINUTES = 5
+seeded_client_secrets: List[Tuple[str, str, str]] = []
+
+
+def generate_client_secret_value() -> str:
+    # token_urlsafe roughly adds 4/3 characters per byte; trim for readability
+    return secrets.token_urlsafe(CLIENT_SECRET_BYTES)[:64]
+
+
+def hash_client_secret_value(secret: str) -> str:
+    return client_secret_context.hash(secret)
+
+
+def verify_client_secret_value(secret: str, hashed: Optional[str]) -> bool:
+    if not secret or not hashed:
+        return False
+    try:
+        return client_secret_context.verify(secret, hashed)
+    except ValueError:
+        return False
+
+
+def append_query_params_to_url(base_url: str, params: dict) -> str:
+    parsed = urlparse(base_url)
+    existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in params.items():
+        if value is not None:
+            existing[key] = value
+    new_query = urlencode(existing)
+    return urlunparse(parsed._replace(query=new_query))
 
 
 def parse_redirect_entries(raw: Optional[str]) -> List[str]:
@@ -240,6 +272,23 @@ def init_db():
             FOREIGN KEY (app_id) REFERENCES applications(id)
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS authorization_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL,
+            app_id TEXT NOT NULL,
+            scopes TEXT,
+            redirect_uri TEXT,
+            expires_at TIMESTAMP NOT NULL,
+            used BOOLEAN DEFAULT FALSE,
+            used_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (app_id) REFERENCES applications(id)
+        )
+    """)
     
     admin_email = "admin@example.com"
     cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
@@ -263,64 +312,61 @@ def init_db():
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, ("Student User", student_email, student_password, "student", "23UCSE4001", "CSE", "7"))
 
-    demo_client_id = "campusconnect-client"
-    cursor.execute("SELECT id FROM applications WHERE client_id = ?", (demo_client_id,))
-    existing_demo_app = cursor.fetchone()
-    if not existing_demo_app:
-        demo_app_id = str(uuid.uuid4())
-        cursor.execute("""
-            INSERT INTO applications (id, name, url, client_id, client_secret, redirect_url)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            demo_app_id,
-            "CampusConnect Demo",
-            "http://127.0.0.1:8080",
-            demo_client_id,
-            "",
-            serialize_redirect_entries([
-                "http://127.0.0.1:5500/third_party_app/index.html",
-                "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
-            ]),
-        ))
-    else:
-        cursor.execute("""
-            UPDATE applications
-            SET redirect_url = ?
-            WHERE client_id = ?
-        """, (serialize_redirect_entries([
+    def ensure_seed_application(name: str, base_url: str, client_id_value: str, redirect_urls: List[str]):
+        cursor.execute("SELECT * FROM applications WHERE client_id = ?", (client_id_value,))
+        existing = cursor.fetchone()
+        redirect_blob = serialize_redirect_entries(redirect_urls)
+        if not existing:
+            app_uuid = str(uuid.uuid4())
+            client_secret_plain = generate_client_secret_value()
+            client_secret_hashed = hash_client_secret_value(client_secret_plain)
+            cursor.execute("""
+                INSERT INTO applications (id, name, url, client_id, client_secret, redirect_url)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                app_uuid,
+                name,
+                base_url,
+                client_id_value,
+                client_secret_hashed,
+                redirect_blob,
+            ))
+            seeded_client_secrets.append((name, client_id_value, client_secret_plain))
+        else:
+            cursor.execute("""
+                UPDATE applications
+                SET redirect_url = ?, url = ?
+                WHERE client_id = ?
+            """, (redirect_blob, base_url, client_id_value))
+            if not existing["client_secret"]:
+                client_secret_plain = generate_client_secret_value()
+                client_secret_hashed = hash_client_secret_value(client_secret_plain)
+                cursor.execute("""
+                    UPDATE applications
+                    SET client_secret = ?
+                    WHERE id = ?
+                """, (client_secret_hashed, existing["id"]))
+                seeded_client_secrets.append((name, client_id_value, client_secret_plain))
+
+    ensure_seed_application(
+        "CampusConnect Demo",
+        "http://127.0.0.1:8080",
+        "campusconnect-client",
+        [
             "http://127.0.0.1:5500/third_party_app/index.html",
             "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
-        ]), demo_client_id))
+        ],
+    )
 
-    # Seed a second demo application for the second third-party app
-    demo2_client_id = "campusconnect-client-2"
-    cursor.execute("SELECT id FROM applications WHERE client_id = ?", (demo2_client_id,))
-    existing_demo2_app = cursor.fetchone()
-    if not existing_demo2_app:
-        demo2_app_id = str(uuid.uuid4())
-        cursor.execute("""
-            INSERT INTO applications (id, name, url, client_id, client_secret, redirect_url)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            demo2_app_id,
-            "CampusConnect Plus Demo",
-            "http://127.0.0.1:8081",
-            demo2_client_id,
-            "",
-            serialize_redirect_entries([
-                "http://127.0.0.1:5500/third_party_app_2/index2.html",
-                "http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html",
-            ]),
-        ))
-    else:
-        cursor.execute("""
-            UPDATE applications
-            SET redirect_url = ?
-            WHERE client_id = ?
-        """, (serialize_redirect_entries([
+    ensure_seed_application(
+        "CampusConnect Plus Demo",
+        "http://127.0.0.1:8081",
+        "campusconnect-client-2",
+        [
             "http://127.0.0.1:5500/third_party_app_2/index2.html",
             "http://127.0.0.1:5500/sso_app/third_party_app_2/index2.html",
-        ]), demo2_client_id))
+        ],
+    )
 
     # Seed demo API keys for both applications (owned by admin for convenience)
     if admin_id:
@@ -340,6 +386,11 @@ def init_db():
     
     conn.commit()
     conn.close()
+
+    if seeded_client_secrets:
+        print("\n[SSO] Generated client secrets for seeded applications (store these securely):")
+        for app_name, client_id_value, secret_value in seeded_client_secrets:
+            print(f" - {app_name} [{client_id_value}]: {secret_value}")
 
 init_db()
 
@@ -386,7 +437,6 @@ class ApplicationCreate(BaseModel):
     name: str
     url: str
     client_id: Optional[str] = ""
-    client_secret: Optional[str] = ""
     redirect_url: Optional[str] = ""
 
 
@@ -400,11 +450,26 @@ class Application(BaseModel):
     name: str
     url: str
     client_id: Optional[str] = ""
-    client_secret: Optional[str] = ""
     redirect_url: Optional[str] = ""
     blocked: bool = False
     authorized_emails: List[str] = Field(default_factory=list)
     authorized_users: List[ApplicationAuthorizedUser] = Field(default_factory=list)
+
+
+class ClientSecretRotateResponse(BaseModel):
+    app_id: str
+    client_id: str
+    name: str
+    client_secret: str
+
+
+class OAuthTokenRequest(BaseModel):
+    grant_type: str = "authorization_code"
+    code: str
+    redirect_uri: Optional[str] = None
+    client_id: str
+    client_secret: str
+
 
 class ApplicationBlockRequest(BaseModel):
     blocked: bool
@@ -477,6 +542,12 @@ def normalize_url_for_validation(url: str) -> Optional[tuple]:
         path = path.rstrip("/")
     return parsed.scheme, parsed.netloc, path
 
+
+def urls_match(url_a: Optional[str], url_b: Optional[str]) -> bool:
+    if not url_a or not url_b:
+        return url_a == url_b
+    return normalize_url_for_validation(url_a) == normalize_url_for_validation(url_b)
+
 def is_redirect_allowed(redirect_uri: str, allowed_url: Optional[str]) -> bool:
     if not allowed_url:
         return True
@@ -542,6 +613,15 @@ def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
+
+def get_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     user = cursor.fetchone()
     conn.close()
     return user
@@ -672,6 +752,53 @@ def delete_pending_consent(token: str) -> None:
     cursor.execute("DELETE FROM pending_consents WHERE token = ?", (token,))
     conn.commit()
     conn.close()
+
+
+def create_authorization_code(user_id: int, app_id: str, scopes: List[str], redirect_uri: str) -> str:
+    code = secrets.token_urlsafe(40)
+    expires_at = (datetime.utcnow() + timedelta(minutes=AUTH_CODE_EXPIRY_MINUTES)).isoformat()
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO authorization_codes (code, user_id, app_id, scopes, redirect_uri, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (code, user_id, app_id, " ".join(scopes), redirect_uri, expires_at))
+    conn.commit()
+    conn.close()
+    return code
+
+
+def consume_authorization_code(code: str) -> Optional[sqlite3.Row]:
+    if not code:
+        return None
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM authorization_codes WHERE code = ?
+    """, (code,))
+    record = cursor.fetchone()
+    if not record:
+        conn.close()
+        return None
+
+    expires_at = datetime.fromisoformat(record["expires_at"])
+    if datetime.utcnow() > expires_at or record["used"]:
+        cursor.execute("UPDATE authorization_codes SET used = TRUE WHERE code = ?", (code,))
+        conn.commit()
+        conn.close()
+        return None
+
+    cursor.execute("""
+        UPDATE authorization_codes
+        SET used = TRUE, used_at = CURRENT_TIMESTAMP
+        WHERE code = ?
+    """, (code,))
+    conn.commit()
+    conn.close()
+    return record
 
 def log_app_removal(user_email: str, user_name: str, app_id: str, app_name: str):
     conn = get_db()
@@ -1051,6 +1178,62 @@ def consent_decision(
     success_redirect = f"{redirect_uri}?token={access_token}"
     return RedirectResponse(url=success_redirect, status_code=status.HTTP_302_FOUND)
 
+
+@app.post("/oauth/token")
+def exchange_authorization_code(payload: OAuthTokenRequest):
+    if payload.grant_type != "authorization_code":
+        raise HTTPException(status_code=400, detail="unsupported_grant_type")
+
+    application = get_application_by_client_id(payload.client_id)
+    if not application:
+        raise HTTPException(status_code=401, detail="invalid_client")
+
+    if not verify_client_secret_value(payload.client_secret, application.get("client_secret")):
+        raise HTTPException(status_code=401, detail="invalid_client")
+
+    if application.get("blocked"):
+        raise HTTPException(status_code=403, detail="Application blocked by admin")
+
+    auth_record = consume_authorization_code(payload.code)
+    if not auth_record or auth_record["app_id"] != application["id"]:
+        raise HTTPException(status_code=400, detail="invalid_grant")
+
+    stored_redirect = auth_record["redirect_uri"]
+    if stored_redirect:
+        incoming_redirect = payload.redirect_uri or stored_redirect
+        if not urls_match(incoming_redirect, stored_redirect):
+            raise HTTPException(status_code=400, detail="invalid_redirect")
+    elif payload.redirect_uri:
+        allowed_redirects = get_allowed_redirects_for_app(application)
+        redirect_ok = any(is_redirect_allowed(payload.redirect_uri, allowed) for allowed in allowed_redirects)
+        if not redirect_ok:
+            raise HTTPException(status_code=400, detail="invalid_redirect")
+
+    user = get_user_by_id(auth_record["user_id"])
+    if not user:
+        raise HTTPException(status_code=400, detail="invalid_grant")
+
+    if is_user_blocked_for_app(user["email"], application["id"]):
+        raise HTTPException(status_code=403, detail="User access blocked by admin")
+
+    scopes = normalize_scopes(auth_record["scopes"]) or DEFAULT_SSO_SCOPES
+
+    access_token, _ = create_access_token(
+        data={
+            "sub": user["email"],
+            "aud": application["id"],
+            "scopes": scopes
+        }
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "scope": " ".join(scopes)
+    }
+
+
 @app.post("/api/auth/refresh")
 def refresh_access_token(token_data: TokenRefresh):
     user_id = verify_refresh_token(token_data.refresh_token)
@@ -1365,6 +1548,9 @@ def update_user_role(user_id: int, role: str, current_user: dict = Depends(requi
 def create_application(app_data: ApplicationCreate, current_user: dict = Depends(require_admin)):
     app_id = str(uuid.uuid4())
     normalized_redirect = normalize_redirect_field(app_data.redirect_url)
+    client_id_value = app_data.client_id or f"client-{uuid.uuid4().hex[:10]}"
+    client_secret_plain = generate_client_secret_value()
+    client_secret_hashed = hash_client_secret_value(client_secret_plain)
     
     conn = get_db()
     cursor = conn.cursor()
@@ -1375,8 +1561,8 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
         app_id,
         app_data.name,
         app_data.url,
-        app_data.client_id,
-        app_data.client_secret,
+        client_id_value,
+        client_secret_hashed,
         normalized_redirect,
     ))
     conn.commit()
@@ -1386,9 +1572,10 @@ def create_application(app_data: ApplicationCreate, current_user: dict = Depends
         "id": app_id,
         "name": app_data.name,
         "url": app_data.url,
-        "client_id": app_data.client_id,
+        "client_id": client_id_value,
         "redirect_url": normalized_redirect,
-        "message": "Application created successfully"
+        "client_secret": client_secret_plain,
+        "message": "Application created successfully. Store the client secret securely."
     }
 
 @app.get("/api/applications", response_model=List[Application])
@@ -1402,6 +1589,7 @@ def get_applications(current_user: dict = Depends(get_current_user)):
     for app in apps:
         app["blocked"] = bool(app.get("blocked", False))
         app["redirect_url"] = serialize_redirect_entries(parse_redirect_entries(app.get("redirect_url")))
+        app["client_secret"] = None
         cursor.execute("""
             SELECT user_email, blocked FROM user_app_access 
             WHERE app_id = ?
@@ -1425,13 +1613,12 @@ def update_application(app_id: str, app_data: ApplicationCreate, current_user: d
     
     cursor.execute("""
         UPDATE applications 
-        SET name = ?, url = ?, client_id = ?, client_secret = ?, redirect_url = ?
+        SET name = ?, url = ?, client_id = ?, redirect_url = ?
         WHERE id = ?
     """, (
         app_data.name,
         app_data.url,
         app_data.client_id,
-        app_data.client_secret,
         normalized_redirect,
         app_id,
     ))
@@ -1458,6 +1645,29 @@ def set_application_block(app_id: str, payload: ApplicationBlockRequest, current
     conn.close()
     state = "blocked" if payload.blocked else "unblocked"
     return {"message": f"Application {state}"}
+
+
+@app.post("/api/applications/{app_id}/client-secret", response_model=ClientSecretRotateResponse)
+def regenerate_client_secret(app_id: str, current_user: dict = Depends(require_admin)):
+    application = get_application_by_id(app_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    new_secret = generate_client_secret_value()
+    hashed_secret = hash_client_secret_value(new_secret)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE applications SET client_secret = ? WHERE id = ?", (hashed_secret, app_id))
+    conn.commit()
+    conn.close()
+
+    return {
+        "app_id": app_id,
+        "client_id": application["client_id"],
+        "name": application["name"],
+        "client_secret": new_secret,
+    }
 
 
 @app.post("/api/applications/{app_id}/users/block")

@@ -38,6 +38,9 @@
         let resourceDetails = null; // Holds secure resource information returned by the backend
         let consentDenied = false; // Tracks whether the user denied the consent prompt
         let hasSSOData = false; // Indicates whether the current profile comes from a live SSO session
+        let blockedState = false; // Tracks whether the user was blocked by admin
+        let blockedNotice = ""; // Stores latest blocked message to show on login
+        let loginNotice = ""; // Stores login notifications (e.g., invalid credentials)
 
         const defaultResourceDetails = {
             title: "Protected University Resource",
@@ -110,7 +113,16 @@
             localStorage.setItem('sso_jwt_token', token);
         }
 
-        function clearSSOToken(message) {
+        const resetBlockedState = () => {
+            blockedState = false;
+            blockedNotice = "";
+        };
+
+        const resetLoginNotice = () => {
+            loginNotice = "";
+        };
+
+        function clearSSOToken(message, options = {}) {
             localStorage.removeItem('sso_jwt_token');
             currentUserName = "Student";
             secureContent = message || "Connect your SSO account to load personalized data.";
@@ -119,6 +131,17 @@
             resourceDetails = null;
             consentDenied = false;
             hasSSOData = false;
+            if (options.blocked) {
+                blockedState = true;
+                blockedNotice = secureContent;
+            } else {
+                resetBlockedState();
+            }
+            if (options.loginNotice) {
+                loginNotice = options.loginNotice;
+            } else if (!options.preserveNotice) {
+                resetLoginNotice();
+            }
         }
 
         const renderGrantedScopes = () => {
@@ -306,6 +329,8 @@
         
         // Function to simulate a successful SSO flow for testing when the external SSO is unavailable.
         function simulateLogin() {
+            resetBlockedState();
+            resetLoginNotice();
             applyProfileState({
                 profile: {
                     name: "Demo Student",
@@ -328,25 +353,10 @@
         }
 
         function showBlockedState(message) {
-            applyProfileState({
-                profile: {
-                    name: "Demo Access",
-                    email: "demo@student.edu",
-                    rollNo: "DEMO000",
-                    branch: "Restricted",
-                    semester: "N/A"
-                },
-                scopes: [],
-                resource: {
-                    title: "Demo Access Only",
-                    content: "Your access to this application has been restricted by the administrator."
-                },
-                statusMessage: message || "Access restricted by administrator. Displaying demo data.",
-                isSSO: false
-            });
-            consentDenied = true;
-            window.location.hash = '#/dashboard';
-            router();
+            const notice = message || "Your access to this application has been restricted by the administrator.";
+            clearSSOToken(notice, { blocked: true });
+            alert(notice);
+            window.location.hash = '#/login';
         }
 
 
@@ -359,6 +369,8 @@
             const redirectUri = `${currentAppUrl}#/sso-success`;
             
             consentDenied = false;
+            resetBlockedState();
+            resetLoginNotice();
             currentProfile = null;
             grantedScopes = [];
             secureContent = "Redirecting to the SSO service for authorization...";
@@ -489,6 +501,14 @@
                     return;
                 }
 
+                if (error === 'invalid_credentials') {
+                    const notice = "Invalid email or password. Please try again.";
+                    alert(notice);
+                    clearSSOToken(notice, { loginNotice: notice, preserveNotice: true });
+                    window.location.hash = '#/login';
+                    return;
+                }
+
                 if (error === 'app_blocked') {
                     clearSSOToken("This application has been blocked by the administrator.");
                     alert("This application has been blocked by the administrator. Please contact support.");
@@ -540,11 +560,17 @@
                 // LOGIN VIEW (Default or explicitly navigating to #/login)
                 mainContainer.innerHTML = loginFormHtml;
                 mainContainer.classList.add('flex', 'items-center', 'justify-center', 'min-h-screen', 'p-4');
-                if (consentDenied) {
-                    const statusMsg = mainContainer.querySelector('#status-message');
-                    if (statusMsg) {
-                        statusMsg.textContent = secureContent;
+                const statusMsg = mainContainer.querySelector('#status-message');
+                if (statusMsg) {
+                    if (loginNotice) {
+                        statusMsg.textContent = loginNotice;
                         statusMsg.classList.add('text-red-500', 'font-semibold');
+                    } else if (consentDenied || blockedState) {
+                        statusMsg.textContent = blockedState ? (blockedNotice || secureContent) : secureContent;
+                        statusMsg.classList.add('text-red-500', 'font-semibold');
+                    } else {
+                        statusMsg.textContent = "Use the SSO button or the local credentials to test the dashboard.";
+                        statusMsg.classList.remove('text-red-500', 'font-semibold');
                     }
                 }
                 document.title = "CampusConnect | Student Login";

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, Search, ChevronDown, X, Key as KeyIcon, Copy, Lock, Unlock, Ban } from "lucide-react";
+import { Shield, LogOut, Users, Settings, Home, Edit2, Trash2, Search, ChevronDown, X, Key as KeyIcon, Copy, Lock, Unlock, Ban, RefreshCw } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000/api";
 
@@ -77,11 +77,11 @@ const AdminDashboard = () => {
     name: "", 
     url: "",
     client_id: "",
-    client_secret: "",
     redirect_url: ""
   });
   const [editingApp, setEditingApp] = useState(null);
   const [appKeyModal, setAppKeyModal] = useState({ visible: false, value: "", appName: "" });
+  const [clientSecretModal, setClientSecretModal] = useState({ visible: false, value: "", appName: "", clientId: "" });
   const [searchQueries, setSearchQueries] = useState({});
   const [sortOrders, setSortOrders] = useState({});
   const parseRedirectField = (value = "") =>
@@ -162,13 +162,22 @@ const AdminDashboard = () => {
         },
         body: JSON.stringify(newApp),
       });
-      
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
       await loadApps();
       await loadRemovalLogs();
-      setNewApp({ name: "", url: "", client_id: "", client_secret: "", redirect_url: "" });
-      alert("App added successfully!");
+      setNewApp({ name: "", url: "", client_id: "", redirect_url: "" });
+      if (data.client_secret) {
+        setClientSecretModal({
+          visible: true,
+          value: data.client_secret,
+          appName: data.name || newApp.name,
+          clientId: data.client_id
+        });
+      } else {
+        alert("App added successfully!");
+      }
     } catch (err) {
       console.error("Error adding app:", err);
       alert("Failed to add application");
@@ -192,7 +201,6 @@ const AdminDashboard = () => {
           name: editingApp.name,
           url: editingApp.url,
           client_id: editingApp.client_id,
-          client_secret: editingApp.client_secret,
           redirect_url: editingApp.redirect_url
         }),
       });
@@ -225,6 +233,32 @@ const AdminDashboard = () => {
     } catch (err) {
       console.error("Error toggling app block:", err);
       alert("Failed to update application block status");
+    }
+  };
+
+  const handleRegenerateSecret = async (app) => {
+    if (!confirm(`Generate a new client secret for ${app.name}? The old secret will stop working immediately.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_URL}/applications/${app.id}/client-secret`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      setClientSecretModal({
+        visible: true,
+        value: data.client_secret,
+        appName: data.name || app.name,
+        clientId: data.client_id
+      });
+    } catch (err) {
+      console.error("Error regenerating client secret:", err);
+      alert(err.message || "Failed to regenerate client secret");
     }
   };
 
@@ -354,6 +388,7 @@ const AdminDashboard = () => {
   ];
 
   return (
+    <>
     <div className="min-h-screen bg-gray-100">
       {/* Header */}
       <header className="bg-white shadow-sm">
@@ -613,6 +648,13 @@ const AdminDashboard = () => {
                             >
                               {app.blocked ? <Unlock size={18} /> : <Lock size={18} />}
                             </button>
+                            <button
+                              onClick={() => handleRegenerateSecret(app)}
+                              className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg"
+                              title="Regenerate client secret"
+                            >
+                              <RefreshCw size={18} />
+                            </button>
                           <button
                             onClick={() => handleGenerateAppKey(app)}
                             className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg"
@@ -745,6 +787,77 @@ const AdminDashboard = () => {
       </div>
 
     </div>
+
+    {appKeyModal.visible && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <h3 className="text-xl font-semibold text-gray-800">API Key Created</h3>
+              <p className="text-sm text-gray-500">Shown once for {appKeyModal.appName}. Copy and store securely.</p>
+            </div>
+            <button onClick={() => setAppKeyModal({ visible: false, value: "", appName: "" })} className="text-gray-400 hover:text-gray-600">
+              <X size={20} />
+            </button>
+          </div>
+          <div className="flex items-center gap-3 bg-gray-100 rounded-xl px-4 py-3">
+            <code className="text-sm break-all flex-1">{appKeyModal.value}</code>
+            <button
+              onClick={() => copyText(appKeyModal.value)}
+              className="p-2 rounded-lg bg-white text-indigo-600 hover:bg-indigo-50"
+              title="Copy API Key"
+            >
+              <Copy size={18} />
+            </button>
+          </div>
+          <div className="mt-6 flex justify-end">
+            <button
+              onClick={() => setAppKeyModal({ visible: false, value: "", appName: "" })}
+              className="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {clientSecretModal.visible && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <h3 className="text-xl font-semibold text-gray-800">Client Secret Generated</h3>
+              <p className="text-sm text-gray-500">
+                {clientSecretModal.appName} ({clientSecretModal.clientId || "no client_id"}) — keep this secret safe. You won't be able to see it again.
+              </p>
+            </div>
+            <button onClick={() => setClientSecretModal({ visible: false, value: "", appName: "", clientId: "" })} className="text-gray-400 hover:text-gray-600">
+              <X size={20} />
+            </button>
+          </div>
+          <div className="flex items-center gap-3 bg-gray-100 rounded-xl px-4 py-3">
+            <code className="text-sm break-all flex-1">{clientSecretModal.value}</code>
+            <button
+              onClick={() => copyText(clientSecretModal.value)}
+              className="p-2 rounded-lg bg-white text-indigo-600 hover:bg-indigo-50"
+              title="Copy Client Secret"
+            >
+              <Copy size={18} />
+            </button>
+          </div>
+          <div className="mt-6 flex justify-end">
+            <button
+              onClick={() => setClientSecretModal({ visible: false, value: "", appName: "", clientId: "" })}
+              className="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+            >
+              I stored it
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 

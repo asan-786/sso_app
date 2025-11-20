@@ -32,6 +32,9 @@
         let resourceDetails = null;
         let consentDenied = false;
         let hasSSOData = false;
+        let blockedState = false;
+        let blockedNotice = "";
+        let loginNotice = "";
 
         const defaultResourceDetails = {
             title: "Protected Resource (App 2)",
@@ -98,7 +101,16 @@
             localStorage.setItem('sso_jwt_token_app2', token);
         }
 
-        function clearSSOToken(message) {
+        const resetBlockedState = () => {
+            blockedState = false;
+            blockedNotice = "";
+        };
+
+        const resetLoginNotice = () => {
+            loginNotice = "";
+        };
+
+        function clearSSOToken(message, options = {}) {
             localStorage.removeItem('sso_jwt_token_app2');
             currentUserName = "Student";
             secureContent = message || "Connect your SSO account to load personalized data from CampusConnect Plus.";
@@ -107,6 +119,17 @@
             resourceDetails = null;
             consentDenied = false;
             hasSSOData = false;
+            if (options.blocked) {
+                blockedState = true;
+                blockedNotice = secureContent;
+            } else {
+                resetBlockedState();
+            }
+            if (options.loginNotice) {
+                loginNotice = options.loginNotice;
+            } else if (!options.preserveNotice) {
+                resetLoginNotice();
+            }
         }
 
         const renderGrantedScopes = () => {
@@ -222,31 +245,18 @@
         `;
 
         function showBlockedState(message) {
-            applyProfileState({
-                profile: {
-                    name: "Demo Access",
-                    email: "demo@campusconnect.plus",
-                    rollNo: "DEMO-PLUS",
-                    branch: "Restricted",
-                    semester: "N/A"
-                },
-                scopes: [],
-                resource: {
-                    title: "Demo Access Only",
-                    content: "Your access to CampusConnect Plus has been restricted by the administrator."
-                },
-                statusMessage: message || "Access restricted by administrator. Displaying demo data.",
-                isSSO: false
-            });
-            consentDenied = true;
-            window.location.hash = '#/dashboard';
-            router();
+            const notice = message || "Your access to CampusConnect Plus has been restricted by the administrator.";
+            clearSSOToken(notice, { blocked: true });
+            alert(notice);
+            window.location.hash = '#/login';
         }
 
         function handleSsoRedirect() {
             const currentAppUrl = window.location.href.split('#')[0];
             const redirectUri = `${currentAppUrl}#/sso-success`;
             consentDenied = false;
+            resetLoginNotice();
+            resetBlockedState();
             currentProfile = null;
             grantedScopes = [];
             secureContent = "Redirecting to the SSO service for CampusConnect Plus...";
@@ -326,6 +336,14 @@
                     return;
                 }
 
+                if (error === 'invalid_credentials') {
+                    const notice = "Invalid email or password. Please try again.";
+                    alert(notice);
+                    clearSSOToken(notice, { loginNotice: notice, preserveNotice: true });
+                    window.location.hash = '#/login';
+                    return;
+                }
+
                 if (error === 'app_blocked') {
                     clearSSOToken("CampusConnect Plus has been blocked by the administrator.");
                     alert("CampusConnect Plus has been blocked by the administrator. Please contact support.");
@@ -352,6 +370,19 @@
                 document.title = "CampusConnect Plus | Dashboard";
             } else {
                 mainContainer.innerHTML = loginFormHtml;
+                const statusMsg = mainContainer.querySelector('#status-message');
+                if (statusMsg) {
+                    if (loginNotice) {
+                        statusMsg.textContent = loginNotice;
+                        statusMsg.classList.add('text-red-500', 'font-semibold');
+                    } else if (blockedState || consentDenied) {
+                        statusMsg.textContent = blockedState ? (blockedNotice || secureContent) : secureContent;
+                        statusMsg.classList.add('text-red-500', 'font-semibold');
+                    } else {
+                        statusMsg.textContent = "Use SSO to connect this app to your SSO account.";
+                        statusMsg.classList.remove('text-red-500', 'font-semibold');
+                    }
+                }
                 document.title = "CampusConnect Plus | Login";
             }
         }
