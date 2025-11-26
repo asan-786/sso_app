@@ -83,6 +83,11 @@ def normalize_url_for_validation(url: str) -> Optional[tuple]:
     """Return (scheme, netloc, path) for comparison. Path has no trailing slash."""
     if not url:
         return None
+    
+    # The hash fragment (#) should not be considered part of the URI for validation.
+    if '#' in url:
+        url = url.split('#')[0]
+
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         return None

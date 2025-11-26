@@ -87,7 +87,7 @@ app = FastAPI(title="SSO Portal - Enhanced Backend")
 # IMPORTANT: Ensure your frontend URL (http://127.0.0.1:5500) is allowed here
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://127.0.0.1:5500"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://127.0.0.1:5500", "http://127.0.0.1:5501"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1000,6 +1000,14 @@ def generate_application_api_key(app_id: str, key_data: ApplicationAPIKeyCreate,
 
     conn = get_db_connection()
     cursor = conn.cursor()
+
+    # REVOKE ALL PREVIOUS API KEYS FOR THIS APP ---
+    cursor.execute("""
+        UPDATE api_keys 
+        SET revoked = TRUE 
+        WHERE app_id = ? AND revoked = FALSE
+    """, (app_id,))
+
     cursor.execute("""
         INSERT INTO api_keys (key_value, user_id, name, app_id)
         VALUES (?, ?, ?, ?)

@@ -244,8 +244,8 @@ def init_db():
         "http://127.0.0.1:8080",
         "campusconnect-client",
         [
-            "http://127.0.0.1:5500/third_party_app/index.html",
-            "http://127.0.0.1:5500/sso_app/third_party_app/index.html",
+            "http://127.0.0.1:5501/third_party_app/index.html",
+            "http://127.0.0.1:5501/sso_app/third_party_app/index.html",
         ],
     )
 

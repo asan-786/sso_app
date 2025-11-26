@@ -5,6 +5,7 @@ import os
 import sys
 
 # --- 1. SETUP PATH TO IMPORT SSO_PY_SDK.py ---
+# This adjusts the path so we can import the SDK file
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'sdk'))
 from SSO_PY_SDK import SSOClient, SSOServiceError  # noqa: E402
 
@@ -12,8 +13,15 @@ from SSO_PY_SDK import SSOClient, SSOServiceError  # noqa: E402
 app = Flask(__name__)
 CORS(app) # Allow CORS for frontend running on a different port/origin
 
-# API Key dedicated to CampusConnect Demo (auto-seeded in SSO)
-APP_API_KEY = "sso_live_cc_demo_primary_4d2d59"
+# MANDATORY CHANGE: Load API Key from environment variable 
+# This key is used to authenticate this app with the SSO backend for /sdk endpoints.
+APP_API_KEY = os.getenv(
+    "CAMPUSCONNECT_API_KEY", 
+    "sso_live_cc_demo_primary_4d2d59" # Fallback for local testing/seeding
+)
+
+if not APP_API_KEY or APP_API_KEY == "sso_live_cc_demo_primary_4d2d59":
+    print("WARNING: Using default/demo CAMPUSCONNECT_API_KEY. Rotate this for production!")
 
 try:
     sso_client = SSOClient(api_key=APP_API_KEY)
@@ -24,7 +32,7 @@ except ValueError as e:
 
 # --- 3. MIDDLEWARE / PROTECTION FUNCTION ---
 def require_sso_token():
-    """Custom decorator/function to verify the JWT token using the Python SDK."""
+    """Custom function to verify the JWT token using the Python SDK."""
     if not sso_client_ready:
         return {"message": "SSO Service is not configured on this server."}, 500
 
@@ -35,32 +43,38 @@ def require_sso_token():
     token = auth_header.split(" ")[1]
 
     try:
-        # **CORE STEP: Use the Python SDK to fetch the user profile with consent-aware data**
+        # CORE STEP: Verify the token and get the filtered user profile in one go
         verification = sso_client.verify_token(token)
         profile = sso_client.get_user_profile(token)
 
-        # Combine user info from both verification and profile responses
+        # Combine user info: 'profile' (rich data filtered by scopes) is primary, 
+        # 'verification' (minimal data) is fallback/sanity check
         v_user = verification.get("user") or {}
         p_user = profile.get("user") or {}
+        
+        # Merge, giving preference to the detailed 'profile' data
         combined_user = {**v_user, **p_user}
 
-        # Ensure academic fields exist, even if not shared
+        # Ensure academic fields exist, even if not shared, for consistent UI display
         combined_user.setdefault("rollNo", combined_user.get("roll_no", "Not shared"))
         combined_user.setdefault("branch", combined_user.get("branch", "Not shared"))
         combined_user.setdefault("semester", combined_user.get("semester", "Not shared"))
 
-        # Store both verification details and profile in request context
+        # Store verified data in request context (Flask trick to pass data to routes)
         request.sso_verification = verification
         request.sso_user = combined_user
         request.sso_scopes = profile.get("scopes", verification.get("scopes", []))
         request.sso_app_id = profile.get("app_id", verification.get("app_id"))
+        
         return None # No error, continue with the request
         
     except SSOServiceError as e:
         print(f"Token Verification Failed: {e}")
         return {"message": "Invalid or expired SSO token. Please re-login.", "error": str(e)}, 401
 
+
 # --- 4. APPLICATION ROUTES ---
+
 @app.route("/")
 def index():
     """Simple health check for the demo server."""
@@ -94,19 +108,12 @@ def secure_data():
         }
     })
 
-# NOTE: This endpoint is not directly used for token exchange, but is included 
-# to show how a backend might handle a redirect if the SSO server directly 
-# redirects with a code or token to a non-frontend URL. 
-# In this specific front-end implementation, the front-end handles the token extraction 
-# from the hash and immediately uses it with /secure-data.
 @app.route("/sso-success")
 def sso_success():
     """Placeholder for the SSO success redirect if handled by the backend."""
     token = request.args.get('token')
     
     if token:
-        # Since the frontend is handling the token extraction from the hash, 
-        # this path is mainly informational for the backend setup.
         return jsonify({"message": "Token received by server (not used by this client-side flow).", "token_length": len(token)}), 200
     
     return jsonify({"message": "No token provided in query params."}), 400
